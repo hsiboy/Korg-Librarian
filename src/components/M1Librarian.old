@@ -1,0 +1,179 @@
+import React, { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Save, Download, Upload, Trash2 } from 'lucide-react';
+
+export const M1Librarian = () => {
+  const [midiAccess, setMidiAccess] = useState(null);
+  const [midiOutput, setMidiOutput] = useState(null);
+  const [midiInput, setMidiInput] = useState(null);
+  const [patches, setPatches] = useState([]);
+  const [error, setError] = useState('');
+  const [selectedPatchType, setSelectedPatchType] = useState('program'); // or 'combi' or 'song'
+
+  useEffect(() => {
+    // Load saved patches from localStorage
+    const loadPatches = () => {
+      const savedPatches = localStorage.getItem('m1patches');
+      if (savedPatches) {
+        setPatches(JSON.parse(savedPatches));
+      }
+    };
+
+    // Initialize WebMIDI
+    const initMidi = async () => {
+      try {
+        const access = await navigator.requestMIDIAccess({ sysex: true });
+        setMidiAccess(access);
+        
+        // Setup MIDI ports
+        const outputs = Array.from(access.outputs.values());
+        const inputs = Array.from(access.inputs.values());
+        
+        if (outputs.length > 0) setMidiOutput(outputs[0]);
+        if (inputs.length > 0) setMidiInput(inputs[0]);
+      } catch (err) {
+        setError('WebMIDI not supported or access denied');
+      }
+    };
+
+    loadPatches();
+    initMidi();
+  }, []);
+
+  // Save patches to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('m1patches', JSON.stringify(patches));
+  }, [patches]);
+
+  const requestPatch = async () => {
+    if (!midiOutput || !midiInput) {
+      setError('MIDI device not connected');
+      return;
+    }
+
+    // M1 System Exclusive format for patch dump request
+    const sysexRequest = [
+      0xF0, // Start of Sysex
+      0x42, // Korg ID
+      0x30, // Channel 1
+      0x20, // M1 ID
+      0x10, // Data dump request
+      selectedPatchType === 'program' ? 0x00 : 
+      selectedPatchType === 'combi' ? 0x01 : 0x02,
+      0xF7  // End of Sysex
+    ];
+
+    midiOutput.send(sysexRequest);
+  };
+
+  const savePatch = (patchData) => {
+    const newPatch = {
+      id: Date.now(),
+      type: selectedPatchType,
+      data: patchData,
+      timestamp: new Date().toISOString()
+    };
+    
+    setPatches([...patches, newPatch]);
+  };
+
+  const sendPatch = (patch) => {
+    if (!midiOutput) {
+      setError('MIDI output not available');
+      return;
+    }
+
+    // Convert patch data to sysex format and send
+    midiOutput.send(patch.data);
+  };
+
+  const deletePatch = (patchId) => {
+    setPatches(patches.filter(patch => patch.id !== patchId));
+  };
+
+  return (
+    <Card className="w-full">
+      <CardHeader>
+        <CardTitle>Korg M1 Patch Manager</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        <div className="space-y-4">
+          <div className="flex space-x-4">
+            <Button
+              onClick={() => setSelectedPatchType('program')}
+              variant={selectedPatchType === 'program' ? 'default' : 'outline'}
+            >
+              Programs
+            </Button>
+            <Button
+              onClick={() => setSelectedPatchType('combi')}
+              variant={selectedPatchType === 'combi' ? 'default' : 'outline'}
+            >
+              Combinations
+            </Button>
+            <Button
+              onClick={() => setSelectedPatchType('song')}
+              variant={selectedPatchType === 'song' ? 'default' : 'outline'}
+            >
+              Songs
+            </Button>
+          </div>
+
+          <div className="flex space-x-4">
+            <Button onClick={requestPatch} className="flex items-center space-x-2">
+              <Download className="w-4 h-4" />
+              <span>Request Patch</span>
+            </Button>
+          </div>
+
+          <div className="border rounded-lg p-4">
+            <h3 className="text-lg font-semibold mb-4">Stored Patches</h3>
+            <div className="space-y-2">
+              {patches
+                .filter(patch => patch.type === selectedPatchType)
+                .map(patch => (
+                  <div 
+                    key={patch.id}
+                    className="flex items-center justify-between p-2 bg-gray-100 rounded"
+                  >
+                    <span>
+                      {patch.type} - {new Date(patch.timestamp).toLocaleString()}
+                    </span>
+                    <div className="space-x-2">
+                      <Button
+                        size="sm"
+                        onClick={() => sendPatch(patch)}
+                        className="flex items-center space-x-1"
+                      >
+                        <Upload className="w-4 h-4" />
+                        <span>Send</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => deletePatch(patch.id)}
+                        className="flex items-center space-x-1"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>Delete</span>
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+export default M1Librarian;

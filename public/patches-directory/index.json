@@ -1,0 +1,39 @@
+{
+  "programs": [
+    {
+      "id": "prog_001",
+      "name": "Universe Piano",
+      "type": "program",
+      "category": "piano",
+      "description": "Classic M1 piano sound",
+      "source": "Factory Preset",
+      "data": [
+        240, 66, 48, 32, /* ... SysEx data would go here ... */
+      ]
+    },
+    {
+      "id": "prog_002",
+      "name": "Galaxy Strings",
+      "type": "program",
+      "category": "strings",
+      "description": "Lush string ensemble",
+      "source": "Factory Preset",
+      "data": [
+        240, 66, 48, 32, /* ... SysEx data would go here ... */
+      ]
+    }
+  ],
+  "combinations": [
+    {
+      "id": "comb_001",
+      "name": "Piano & Strings",
+      "type": "combination",
+      "category": "layered",
+      "description": "Classic piano layered with strings",
+      "source": "Factory Preset",
+      "data": [
+        240, 66, 48, 32, /* ... SysEx data would go here ... */
+      ]
+    }
+  ]
+}
