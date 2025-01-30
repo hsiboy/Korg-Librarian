@@ -9,21 +9,21 @@
 
 | Status | Second | Third | Description | EMA |
 |--------|---------|---------|--------------|-----|
-| 1000 nnnn | 0kkk kkkk | 0100 0000 | Note Off<br>kkk kkkk=24~108 (61key + Transpose) | A |
-| 1001 nnnn | 0kkk kkkk | 0vvv vvvv | Note On<br>kkk kkkk=24~108 (61key + Transpose)<br>vvv vvvv=1~127 | A |
-| 1011 nnnn | 0000 0001 | 0vvv vvvv | Pitch Modulation (Joy Stick(+Y)) | C |
-| 1011 nnnn | 0000 0010 | 0vvv vvvv | VDF Modulation (Joy Stick(-Y)) | C |
-| 1011 nnnn | 0000 0110 | 0vvv vvvv | Data Entry (MSB) (E.Slider.A.Pedal) #1 | E |
-| 1011 nnnn | 0000 0111 | 0vvv vvvv | Volume (Assignable Pedal) | C |
-| 1011 nnnn | 0010 0110 | 0vvv vvvv | Data Entry (LSB) (E.Slider.A.Pedal) #1 | E |
-| 1011 nnnn | 0100 0000 | 0000 0000 | Damper Off (Damper Pedal) | C |
-| 1011 nnnn | 0100 0000 | 0111 1111 | Damper On (Damper Pedal) | C |
-| 1011 nnnn | 0110 0000 | 0000 0000 | Data Increment (UP Switch) #1 | E |
-| 1011 nnnn | 0110 0001 | 0000 0000 | Data Decrement (DOWN Switch) #1 | E |
-| 1011 nnnn | 0ccc cccc | 0vvv vvvv | Control Data (Seq.Recorded Data) #3<br>ccc cccc=00~101 | Q |
-| 1100 nnnn | 0ppp pppp | ---- ---- | Program Change (Program or Combi) #2 | P |
-| 1101 nnnn | 0vvv vvvv | ---- ---- | Channel Pressure (After Touch) | C |
-| 1110 nnnn | 0bbb bbbb | 0bbb bbbb | Bender Change (Joy Stick(X)) #3 | C |
+| `1000 nnnn` | `0kkk kkkk` | `0100 0000` | Note Off <br> kkk kkkk=24\~108 (61key + Transpose) | A |
+| `1001 nnnn` | `0kkk kkkk` | `0vvv vvvv` | Note On <br> kkk kkkk=24\~108 (61key + Transpose) <br> vvv vvvv=1\~127 | A |
+| `1011 nnnn` | `0000 0001` | `0vvv vvvv` | Pitch Modulation (Joy Stick(+Y)) | C |
+| `1011 nnnn` | `0000 0010` | `0vvv vvvv` | VDF Modulation (Joy Stick(-Y)) | C |
+| `1011 nnnn` | `0000 0110` | `0vvv vvvv` | Data Entry (MSB) (E.Slider.A.Pedal) #1 | E |
+| `1011 nnnn` | `0000 0111` | `0vvv vvvv` | Volume (Assignable Pedal) | C |
+| `1011 nnnn` | `0010 0110` | `0vvv vvvv` | Data Entry (LSB) (E.Slider.A.Pedal) #1 | E |
+| `1011 nnnn` | `0100 0000` | `0000 0000` | Damper Off (Damper Pedal) | C |
+| `1011 nnnn` | `0100 0000` | `0111 1111` | Damper On (Damper Pedal) | C |
+| `1011 nnnn` | `0110 0000` | `0000 0000` | Data Increment (UP Switch) #1 | E |
+| `1011 nnnn` | `0110 0001` | `0000 0000` | Data Decrement (DOWN Switch) #1 | E |
+| `1011 nnnn` | `0ccc cccc` | `0vvv vvvv` | Control Data (Seq.Recorded Data) #3<br>ccc cccc=00\~101 | Q |
+| `1100 nnnn` | `0ppp pppp` | `---- ----` | Program Change (Program or Combi) #2 | P |
+| `1101 nnnn` | `0vvv vvvv` | `---- ----` | Channel Pressure (After Touch) | C |
+| `1110 nnnn` | `0bbb bbbb` | `0bbb bbbb` | Bender Change (Joy Stick(X)) #3 | C |
 
 nnnn : MIDI Channel No.(0~15) Usually Global Channel. When using Sequencer, each track's channel.
 
@@ -35,17 +35,17 @@ nnnn : MIDI Channel No.(0~15) Usually Global Channel. When using Sequencer, each
 - Q : Enable only when Sequencer is Playing(T),Recording(R)
 
 **Notes**:
-- #1 : Prog.E.Prog.Combi.E.Combi Mode Only
-- #2 : When Memory Allocation = L.Prog ····· ppp pppp=0~99
-       -    -     -     = L.Seq. ····· ppp pppp=0~49
-- #3 : Only Seq.Recorded Data use all c=0~101 area
+> 1 : Prog, E.Prog, Combi and E.Combi Mode Only<br>
+> 2 : When Memory Allocation = L.Prog ····· ppp pppp=0\~99<br>
+> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;When Memory Allocation = L.Seq. ····· ppp pppp=0\~49<br>
+> 3 : Only Seq.Recorded Data use all c=0\~101 area<br>
 
 ### 1-2 SYSTEM COMMON MESSAGES
 
 | Status | Second | Third | Description |
 |--------|---------|---------|--------------|
-| 1111 0010 | 0111 1111 | 0hhh hhhh | Song Position Pointer<br>111 1111 : Least significant<br>hhh hhhh : Most significant |
-| 1111 0011 | 000s ssss | ---- ---- | Song Select<br>s ssss : Song No. = 0~19 (10~19:Card) |
+| `1111 0010` | `0111 1111` | `0hhh hhhh` | Song Position Pointer<br>111 1111 : Least significant<br>hhh hhhh : Most significant |
+| `1111 0011` | `000s ssss` | `---- ----` | Song Select<br>s ssss : Song No. = 0\~19 (10\~19:Card) |
 
 *Transmits when in Sequencer Mode (Internal Clock)*
 
@@ -53,11 +53,11 @@ nnnn : MIDI Channel No.(0~15) Usually Global Channel. When using Sequencer, each
 
 | Status | Description |
 |--------|-------------|
-| 1111 1000 | Timing Clock #4 |
-| 1111 1010 | Start #4 |
-| 1111 1011 | Continue #4 |
-| 1111 1100 | Stop #4 |
-| 1111 1110 | Active Sensing |
+| `1111 1000` | Timing Clock #4 |
+| `1111 1010` | Start #4 |
+| `1111 1011` | Continue #4 |
+| `1111 1100` | Stop #4 |
+| `1111 1110` | Active Sensing |
 
 #4 : Transmits when in Sequencer Mode (Internal Clock)
 
@@ -65,21 +65,21 @@ nnnn : MIDI Channel No.(0~15) Usually Global Channel. When using Sequencer, each
 
 | Byte (Hex) | Description |
 |------------|-------------|
-| 1111 0000 (F0) | EXCLUSIVE STATUS |
-| 0111 1110 (7E) | NON REALTIME MESSAGE |
-| 0000 #### (0#) | MIDI GLOBAL CHANNEL (DEVICE ID) |
-| 0000 0110 (06) | INQUIRY MESSAGE |
-| 0000 0010 (02) | IDENTITY REPLY |
-| 0100 0010 (42) | KORG ID (MANUFACTURERS ID) |
-| 0001 1001 (19) | M1 ID (FAMILY CODE(LSB)) |
-| 0000 0000 (00) | ( - - (MSB)) |
-| 0000 0000 (00) | (MEMBER CODE(LSB)) |
-| 0000 0000 (00) | ( - - (MSB)) |
-| 0### #### (##) | ROM No. 1~ (Minor Ver.(LSB)) |
-| 0000 0000 (00) | ( - - (MSB)) |
-| 0### #### (##) | SOFT VER. 1~ (Major Ver.(LSB)) |
-| 0000 0000 (00) | ( - - (MSB)) |
-| 1111 0111 (F7) | END OF EXCLUSIVE |
+| `1111 0000 (F0)` | EXCLUSIVE STATUS |
+| `0111 1110 (7E)` | NON REALTIME MESSAGE |
+| `0000 #### (0#)` | MIDI GLOBAL CHANNEL (DEVICE ID) |
+| `0000 0110 (06)` | INQUIRY MESSAGE |
+| `0000 0010 (02)` | IDENTITY REPLY |
+| `0100 0010 (42)` | KORG ID (MANUFACTURERS ID) |
+| `0001 1001 (19)` | M1 ID (FAMILY CODE(LSB)) |
+| `0000 0000 (00)` | ( - - (MSB)) |
+| `0000 0000 (00)` | (MEMBER CODE(LSB)) |
+| `0000 0000 (00)` | ( - - (MSB)) |
+| `0### #### (##)` | ROM No. 1\~ (Minor Ver.(LSB)) |
+| `0000 0000 (00)` | ( - - (MSB)) |
+| `0### #### (##)` | SOFT VER. 1\~ (Major Ver.(LSB)) |
+| `0000 0000 (00)` | ( - - (MSB)) |
+| `1111 0111 (F7)` | END OF EXCLUSIVE |
 
 *Transmits when INQUIRY MESSAGE REQUEST Received*
 
