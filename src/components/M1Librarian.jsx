@@ -3,6 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Save, Download, Upload, Trash2, Database, Music } from 'lucide-react';
+import { 
+  parseProgramData,
+  parseCombinationData,
+  parseGlobalData,
+  parseSequenceData
+} from '../utils/m1Parsers';
 
 // MIDI Constants
 const SYSEX_START = 0xF0;
@@ -13,20 +19,6 @@ const KORG_ID = 0x42;
 const CHANNEL = 0x30;  // Global channel 0
 const M1_ID = 0x19;    // From documentation
 
-// Message Types
-const MSG_TYPES = {
-  READY: 0x78,
-  DUMP_START: 0x76,
-  COMPLETED: 0x23,
-  ERROR: 0x24,
-  PARAMETER_CHANGE: 0x4E,
-  DATA_DUMP: 0x50,
-  ALL_PROGRAM_DUMP: [0x01, 0x0C],
-  ALL_COMBINATION_DUMP: [0x01, 0x0D],
-  GLOBAL_DUMP: [0x01, 0x0E],
-  SEQUENCE_DUMP: [0x01, 0x0F]
-};
-
 // Device inquiry message format
 const DEVICE_INQUIRY = [
   SYSEX_START,       // F0 Start of SysEx
@@ -35,6 +27,41 @@ const DEVICE_INQUIRY = [
   INQUIRY_MESSAGE,   // 06 Inquiry Message
   SYSEX_END         // F7 End of SysEx
 ];
+
+// Add a device inquiry function
+const sendDeviceInquiry = async () => {
+  if (!midiOutput) {
+    setError('MIDI output not available');
+    return;
+  }
+
+  console.log('Sending device inquiry:', 
+    DEVICE_INQUIRY.map(b => `0x${b.toString(16).padStart(2, '0')}`));
+  
+  try {
+    await midiOutput.send(DEVICE_INQUIRY);
+  } catch (err) {
+    console.error('Error sending device inquiry:', err);
+    setError('Failed to send device inquiry');
+  }
+};
+
+// Message types from documentation
+const MSG_TYPES = {
+  PROGRAM_DUMP: [0x01, 0x00],          // Program Parameter Dump
+  ALL_PROGRAM_DUMP: [0x01, 0x0C],      // All Program Parameter Dump
+  COMBINATION_DUMP: [0x01, 0x01],      // Combination Parameter Dump
+  ALL_COMBINATION_DUMP: [0x01, 0x0D],  // All Combination Parameter Dump
+  GLOBAL_DUMP: [0x01, 0x0E],          // Global Parameter Dump
+  SEQUENCE_DUMP: [0x01, 0x0F],        // Sequence Data Dump
+};
+
+const DUMP_SIZES = {
+  PROGRAM: 143,         // Each program is 143 bytes
+  COMBINATION: 124,     // Each combination is 124 bytes
+  GLOBAL: 51,          // Global parameters are 51 bytes
+  SEQUENCE_HEADER: 28   // Variable size, header is 28 bytes
+};
 
 export const M1Librarian = () => {
   const [midiAccess, setMidiAccess] = useState(null);
@@ -47,23 +74,6 @@ export const M1Librarian = () => {
   const [backupInProgress, setBackupInProgress] = useState(false);
   const [backupProgress, setBackupProgress] = useState({ current: 0, total: 0 });
 
-  const sendDeviceInquiry = async () => {
-    if (!midiOutput) {
-      setError('MIDI output not available');
-      return;
-    }
-
-    console.log('Sending device inquiry:', 
-      DEVICE_INQUIRY.map(b => `0x${b.toString(16).padStart(2, '0')}`));
-    
-    try {
-      await midiOutput.send(DEVICE_INQUIRY);
-    } catch (err) {
-      console.error('Error sending device inquiry:', err);
-      setError('Failed to send device inquiry');
-    }
-  };
-
   useEffect(() => {
     const loadPatches = () => {
       const savedPatches = localStorage.getItem('m1patches');
@@ -74,14 +84,47 @@ export const M1Librarian = () => {
 
     const initMidi = async () => {
       try {
+        if (!navigator.requestMIDIAccess) {
+          console.error('WebMIDI not supported');
+          setError('WebMIDI not supported in this browser');
+          return;
+        }
+
+        console.log('Requesting MIDI access...');
         const access = await navigator.requestMIDIAccess({ sysex: true });
         setMidiAccess(access);
         
         const outputs = Array.from(access.outputs.values());
         const inputs = Array.from(access.inputs.values());
         
-        console.log('Available MIDI outputs:', outputs.map(o => o.name));
-        console.log('Available MIDI inputs:', inputs.map(i => i.name));
+        console.log(`Found ${outputs.length} MIDI outputs:`, outputs.map(o => o.name));
+        console.log(`Found ${inputs.length} MIDI inputs:`, inputs.map(i => i.name));
+        
+        if (outputs.length === 0) {
+          console.error('No MIDI outputs found');
+          setError('No MIDI devices found');
+          return;
+        }
+
+        // Set up MIDI port change handler
+        access.onstatechange = (e) => {
+          console.log('MIDI state change:', e.port.type, e.port.state, e.port.name);
+          if (e.port.state === 'connected') {
+            console.log('MIDI device connected:', e.port.name);
+            if (e.port.type === 'output') {
+              setMidiOutput(e.port);
+            } else if (e.port.type === 'input') {
+              setMidiInput(e.port);
+            }
+          } else if (e.port.state === 'disconnected') {
+            console.log('MIDI device disconnected:', e.port.name);
+            if (e.port.type === 'output' && midiOutput?.id === e.port.id) {
+              setMidiOutput(null);
+            } else if (e.port.type === 'input' && midiInput?.id === e.port.id) {
+              setMidiInput(null);
+            }
+          }
+        };
         
         if (outputs.length > 0) {
           setMidiOutput(outputs[0]);
@@ -94,12 +137,14 @@ export const M1Librarian = () => {
           input.onmidimessage = handleMIDIMessage;
         }
 
-        // Send device inquiry once MIDI is initialized
-        await sendDeviceInquiry();
+        // Send device inquiry after successful connection
+        if (outputs.length > 0) {
+          await sendDeviceInquiry();
+        }
         
       } catch (err) {
         console.error('MIDI initialization error:', err);
-        setError('WebMIDI not supported or access denied');
+        setError('Error initializing MIDI: ' + err.message);
       }
     };
 
@@ -120,6 +165,14 @@ export const M1Librarian = () => {
   const handleMIDIMessage = (event) => {
     const data = Array.from(event.data);
     
+    // Log all incoming MIDI data for debugging
+    console.log('Raw MIDI message:', {
+      type: data[0].toString(16),
+      length: data.length,
+      data: data.map(b => `0x${b.toString(16).padStart(2, '0')}`),
+      ascii: data.map(b => b >= 32 && b <= 126 ? String.fromCharCode(b) : '.').join('')
+    });
+
     // Ignore Active Sensing and Timing Clock
     if (event.data[0] === 0xFE || event.data[0] === 0xF8) {
       return;
@@ -127,111 +180,149 @@ export const M1Librarian = () => {
 
     // For non-SysEx messages, just log them
     if (event.data[0] !== SYSEX_START) {
-      console.log('MIDI message:', 
+      console.log('MIDI message header:', 
         data.slice(0, 4).map(b => `0x${b.toString(16).padStart(2, '0')}`));
       return;
     }
 
-    // Handle device inquiry response
-    if (data[1] === UNIVERSAL_SYSEX && data[3] === INQUIRY_MESSAGE) {
-      console.log('Device Inquiry Response:', {
-        manufacturerId: `0x${data[4].toString(16)}`,
-        deviceFamily: `0x${data[5].toString(16)}`,
-        deviceMember: `0x${data[6].toString(16)}`,
-        softwareVersion: data.slice(7, 11).map(b => b.toString(16)).join('.')
-      });
-      return;
-    }
-
-    // Parse SysEx header for M1 messages
+    // Parse SysEx header
     if (data[1] === KORG_ID && data[3] === M1_ID) {
-      const msgType = data[4];
-      const cmdByte = data[5];
-      
-      console.log('M1 message:', {
-        type: `0x${msgType.toString(16)}`,
-        command: `0x${cmdByte.toString(16)}`,
-        header: data.slice(0, 6).map(b => `0x${b.toString(16).padStart(2, '0')}`),
-        length: data.length
-      });
+      const messageType = data[4];
+      console.log('M1 message header:', 
+        data.slice(0, 6).map(b => `0x${b.toString(16).padStart(2, '0')}`));
+      const messageType = data[4];
+      const messageData = data.slice(6, -1); // Remove header and EOX
 
-      switch(msgType) {
-        case MSG_TYPES.READY:
-          console.log('M1 Ready signal received');
-          break;
-          
-        case MSG_TYPES.DUMP_START:
-          console.log('M1 Dump starting signal received');
-          break;
+      try {
+        switch(messageType) {
+          case 0x78: // Might be "ready to send"
+            console.log('M1 Ready signal received');
+            break;
+            
+          case 0x76: // Might be "dump starting"
+            console.log('M1 Dump starting signal received');
+            break;
 
-        case MSG_TYPES.COMPLETED:
-          console.log('Data Load Completed');
-          break;
-          
-        case MSG_TYPES.ERROR:
-          console.error('Data Load Error');
-          setError('Data Load Error from M1');
-          break;
-
-        case MSG_TYPES.PARAMETER_CHANGE:
-          console.log('Parameter Change:', data.slice(6, -1));
-          break;
-
-        case MSG_TYPES.DATA_DUMP:
-          console.log('Data Dump:', {
-            command: `0x${cmdByte.toString(16)}`,
-            length: data.length - 7  // Subtract header and EOX
-          });
-          
-          // Add a small delay before processing
-          setTimeout(() => {
-            handleProgramDump(data.slice(6, -1));
-          }, 100);
-          break;
-
-        default:
-          console.log(`Unknown message type: 0x${msgType.toString(16)}`);
+          case 0x23: // DATA LOAD COMPLETED
+            console.log('Data Load Completed');
+            break;
+            
+          case 0x24: // DATA LOAD ERROR
+            console.error('Data Load Error');
+            setError('Data Load Error from M1');
+            break;
+            
+          case MSG_TYPES.ALL_PROGRAM_DUMP[1]:
+            console.log('Receiving Program Parameter Dump');
+            handleProgramDump(messageData);
+            break;
+            
+          case MSG_TYPES.ALL_COMBINATION_DUMP[1]:
+            console.log('Receiving Combination Parameter Dump');
+            handleCombinationDump(messageData);
+            break;
+            
+          case MSG_TYPES.GLOBAL_DUMP[1]:
+            console.log('Receiving Global Parameter Dump');
+            handleGlobalDump(messageData);
+            break;
+            
+          case MSG_TYPES.SEQUENCE_DUMP[1]:
+            console.log('Receiving Sequence Data Dump');
+            handleSequenceDump(messageData);
+            break;
+            
+          default:
+            console.log('Unknown message type:', messageType);
+        }
+      } catch (err) {
+        console.error('Error processing MIDI message:', err);
+        setError('Error processing MIDI data');
       }
     }
   };
 
   const handleProgramDump = (data) => {
-    // M1 program is 143 bytes
-    const PROGRAM_SIZE = 143;
-    const programCount = Math.floor(data.length / PROGRAM_SIZE);
+    const programCount = Math.floor(data.length / DUMP_SIZES.PROGRAM);
     console.log(`Processing ${programCount} programs`);
     
-    // Create array of all patches before updating state
-    const newPatches = [];
-    
     for(let i = 0; i < programCount; i++) {
-      const start = i * PROGRAM_SIZE;
-      const programData = data.slice(start, start + PROGRAM_SIZE);
+      const start = i * DUMP_SIZES.PROGRAM;
+      const programData = data.slice(start, start + DUMP_SIZES.PROGRAM);
+      const parsedProgram = parseProgramData(programData);
       
-      // Extract program name (first 10 bytes)
-      const nameBytes = [...programData.slice(0, 7), ...programData.slice(9, 12)];
-      const name = String.fromCharCode(
-        ...nameBytes.filter(b => b >= 32 && b <= 126)
-      ).trim();
-      
-      newPatches.push({
-        id: `program-${i}-${Date.now()}`,  // Make sure IDs are unique
+      const newPatch = {
+        id: Date.now() + i,
         type: 'program',
         number: i,
-        data: Array.from(programData),
-        name: name || `Program ${i + 1}`,
+        data: programData,
+        parsedData: parsedProgram,
+        name: parsedProgram.name || `Program ${i}`,
         timestamp: new Date().toISOString()
-      });
+      };
+      
+      setPatches(prev => [...prev, newPatch]);
+      setBackupProgress(prev => ({
+        ...prev,
+        current: i + 1
+      }));
+    }
+  };
+
+  const handleCombinationDump = (data) => {
+    const combiCount = Math.floor(data.length / DUMP_SIZES.COMBINATION);
+    console.log(`Processing ${combiCount} combinations`);
+    
+    for(let i = 0; i < combiCount; i++) {
+      const start = i * DUMP_SIZES.COMBINATION;
+      const combiData = data.slice(start, start + DUMP_SIZES.COMBINATION);
+      const parsedCombi = parseCombinationData(combiData);
+      
+      const newPatch = {
+        id: Date.now() + i,
+        type: 'combination',
+        number: i,
+        data: combiData,
+        parsedData: parsedCombi,
+        name: parsedCombi.name || `Combination ${i}`,
+        timestamp: new Date().toISOString()
+      };
+      
+      setPatches(prev => [...prev, newPatch]);
+    }
+  };
+
+  const handleGlobalDump = (data) => {
+    if (data.length !== DUMP_SIZES.GLOBAL) {
+      console.error('Invalid global data size');
+      return;
     }
 
-    // Update state once with all new patches
-    setPatches(prev => [...prev, ...newPatches]);
+    const parsedGlobal = parseGlobalData(data);
+    const newPatch = {
+      id: Date.now(),
+      type: 'global',
+      data: data,
+      parsedData: parsedGlobal,
+      name: 'Global Settings',
+      timestamp: new Date().toISOString()
+    };
     
-    // Update progress
-    setBackupProgress({
-      current: programCount,
-      total: programCount
-    });
+    setPatches(prev => [...prev, newPatch]);
+  };
+
+  const handleSequenceDump = (data) => {
+    const parsedSequence = parseSequenceData(data);
+    const newPatch = {
+      id: Date.now(),
+      type: 'sequence',
+      data: data,
+      parsedData: parsedSequence,
+      name: parsedSequence.name || 'Sequence Data',
+      timestamp: new Date().toISOString()
+    };
+    
+    setPatches(prev => [...prev, newPatch]);
   };
 
   const requestPatch = async () => {
@@ -240,28 +331,24 @@ export const M1Librarian = () => {
       return;
     }
 
-    const msgType = selectedPatchType === 'program' ? MSG_TYPES.ALL_PROGRAM_DUMP :
-                   selectedPatchType === 'combination' ? MSG_TYPES.ALL_COMBINATION_DUMP :
-                   MSG_TYPES.SEQUENCE_DUMP;
-
     const sysex = new Uint8Array([
       SYSEX_START,
       KORG_ID,
       CHANNEL,
       M1_ID,
-      ...msgType,
-      0x00,  // Bank
+      ...MSG_TYPES[`${selectedPatchType.toUpperCase()}_DUMP`],
+      0x00,  // Bank number
       SYSEX_END
     ]);
 
-    console.log('Sending request:', 
+    console.log('Sending MIDI SysEx:', 
       Array.from(sysex).map(b => `0x${b.toString(16).padStart(2, '0')}`));
     
     try {
       await midiOutput.send(sysex);
-      console.log('Request sent successfully');
+      console.log('SysEx message sent successfully');
     } catch (err) {
-      console.error('Error sending request:', err);
+      console.error('Error sending MIDI message:', err);
       setError('Failed to send MIDI message');
     }
   };
@@ -276,24 +363,25 @@ export const M1Librarian = () => {
     setBackupProgress({ current: 0, total: 100 });
 
     try {
+      // Request all program parameters
       const sysex = new Uint8Array([
         SYSEX_START,
         KORG_ID,
         CHANNEL,
         M1_ID,
         ...MSG_TYPES.ALL_PROGRAM_DUMP,
-        0x00,   // Bank
+        0x00,   // Bank 0
         SYSEX_END
       ]);
 
-      console.log('Sending backup request:', 
+      console.log('Sending ALL PROGRAM PARAMETER DUMP request:', 
         Array.from(sysex).map(b => `0x${b.toString(16).padStart(2, '0')}`));
       
       await midiOutput.send(sysex);
       console.log('Waiting for M1 response...');
 
     } catch (err) {
-      console.error('Error during backup:', err);
+      console.error('Error during backup process:', err);
       setError('Error during backup process');
     } finally {
       setBackupInProgress(false);
@@ -306,8 +394,8 @@ export const M1Librarian = () => {
       return;
     }
 
-    const NOTE_ON = 0x90;  // Channel 1
-    const NOTE_OFF = 0x80;
+    const NOTE_ON = 0x90;  // Note On channel 1
+    const NOTE_OFF = 0x80;  // Note Off channel 1
     const VELOCITY = 100;
 
     const pattern = [
@@ -341,6 +429,7 @@ export const M1Librarian = () => {
       return;
     }
 
+    // Convert patch data to sysex format and send
     midiOutput.send(patch.data);
   };
 
@@ -354,10 +443,30 @@ export const M1Librarian = () => {
         <CardTitle>Korg M1 Patch Manager</CardTitle>
       </CardHeader>
       <CardContent>
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{error}</AlertDescription>
+        {!midiAccess && (
+          <Alert className="mb-4">
+            <AlertDescription>
+              WebMIDI is not available. Please ensure you're using a supported browser (Chrome, Edge, or Opera).
+            </AlertDescription>
           </Alert>
+        )}
+
+        {midiAccess && !midiOutput && (
+          <Alert className="mb-4">
+            <AlertDescription>
+              No MIDI devices detected. Please connect a MIDI interface and refresh the page.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {midiAccess && midiOutput && (
+          <div className="mb-4 text-sm">
+            <p>MIDI Interface Connected:</p>
+            <div className="p-2 bg-gray-100 rounded mt-1">
+              <p>Output: {midiOutput.name}</p>
+              {midiInput && <p>Input: {midiInput.name}</p>}
+            </div>
+          </div>
         )}
 
         <div className="space-y-4">
@@ -386,7 +495,7 @@ export const M1Librarian = () => {
             <Button 
               onClick={requestPatch} 
               className="flex items-center space-x-2"
-              disabled={backupInProgress}
+              disabled={backupInProgress || !isM1Detected}
             >
               <Download className="w-4 h-4" />
               <span>Request Current Patch</span>
@@ -394,7 +503,7 @@ export const M1Librarian = () => {
             <Button
               onClick={startBulkBackup}
               className="flex items-center space-x-2"
-              disabled={backupInProgress}
+              disabled={backupInProgress || !isM1Detected}
             >
               <Save className="w-4 h-4" />
               <span>Backup All Patches</span>
@@ -402,9 +511,18 @@ export const M1Librarian = () => {
             <Button
               onClick={playTestPattern}
               className="flex items-center space-x-2"
+              disabled={!midiOutput}  // Only disable if no MIDI at all
             >
               <Music className="w-4 h-4" />
               <span>Test MIDI</span>
+            </Button>
+            <Button
+              onClick={sendDeviceInquiry}
+              className="flex items-center space-x-2"
+              disabled={!midiOutput}
+            >
+              <Download className="w-4 h-4" />
+              <span>Identify Device</span>
             </Button>
           </div>
 
@@ -422,42 +540,68 @@ export const M1Librarian = () => {
             </div>
           )}
 
-          <div className="border rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-4">Stored Patches</h3>
-            <div className="space-y-2">
-              {patches
-                .filter(patch => patch.type === selectedPatchType)
-                .map(patch => (
-                  <div 
-                    key={patch.id}
-                    className="flex items-center justify-between p-2 bg-gray-100 rounded"
-                  >
-                    <span>
-                      {patch.name || `${patch.type} - ${new Date(patch.timestamp).toLocaleString()}`}
-                    </span>
-                    <div className="space-x-2">
-                      <Button
-                        size="sm"
-                        onClick={() => sendPatch(patch)}
-                        className="flex items-center space-x-1"
-                      >
-                        <Upload className="w-4 h-4" />
-                        <span>Send</span>
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() => deletePatch(patch.id)}
-                        className="flex items-center space-x-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        <span>Delete</span>
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-            </div>
+          <div className="flex space-x-4 mt-8 mb-4">
+            <Button
+              variant={activeView === 'library' ? 'default' : 'outline'}
+              onClick={() => setActiveView('library')}
+              className="flex items-center space-x-2"
+            >
+              <Database className="w-4 h-4" />
+              <span>My Library</span>
+            </Button>
+            <Button
+              variant={activeView === 'browser' ? 'default' : 'outline'}
+              onClick={() => setActiveView('browser')}
+              className="flex items-center space-x-2"
+            >
+              <Download className="w-4 h-4" />
+              <span>Patch Browser</span>
+            </Button>
           </div>
+
+          {activeView === 'browser' ? (
+            <PatchBrowser 
+              onSendPatch={sendPatch}
+              selectedPatchType={selectedPatchType}
+            />
+          ) : (
+            <div className="border rounded-lg p-4">
+              <h3 className="text-lg font-semibold mb-4">Stored Patches</h3>
+              <div className="space-y-2">
+                {patches
+                  .filter(patch => patch.type === selectedPatchType)
+                  .map(patch => (
+                    <div 
+                      key={patch.id}
+                      className="flex items-center justify-between p-2 bg-gray-100 rounded"
+                    >
+                      <span>
+                        {patch.name || `${patch.type} - ${new Date(patch.timestamp).toLocaleString()}`}
+                      </span>
+                      <div className="space-x-2">
+                        <Button
+                          size="sm"
+                          onClick={() => sendPatch(patch)}
+                          className="flex items-center space-x-1"
+                        >
+                          <Upload className="w-4 h-4" />
+                          <span>Send</span>
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => deletePatch(patch.id)}
+                          className="flex items-center space-x-1"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span>Delete</span>
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
