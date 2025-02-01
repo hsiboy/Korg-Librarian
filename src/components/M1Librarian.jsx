@@ -3,12 +3,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Save, Download, Upload, Trash2, Database, Music } from 'lucide-react';
+import M1Debug from './M1Debug';
+import M1ProtocolTest from './M1ProtocolTest';
+import M1ProgramDump from './M1ProgramDump';
+
 import { 
   parseProgramData,
   parseCombinationData,
   parseGlobalData,
   parseSequenceData
-} from '../utils/m1Parsers';
+} from '../utils/M1Parsers';
 
 // MIDI Constants
 const SYSEX_START = 0xF0;
@@ -16,35 +20,35 @@ const SYSEX_END = 0xF7;
 const UNIVERSAL_SYSEX = 0x7E;
 const INQUIRY_MESSAGE = 0x06;
 const KORG_ID = 0x42;
-const CHANNEL = 0x30;  // Global channel 0
+const CHANNEL = 0x31;  // Global channel 0
 const M1_ID = 0x19;    // From documentation
+const DEVICE_ID_ALL = 0x7F;  // Will make any device respond
+const INQUIRY_REQUEST = 0x01;
+const INQUIRY_RESPONSE = 0x02;
+
+/*
+The format of the inquiry message is as follows:
+
+F0 7E <device ID> 06 01 F7 
+
+      F0 7E <device ID>   Universal System Exclusive Non-real time header 
+      06                  General Information (sub-ID#1) 
+      01                  Identity Request (sub-ID#2) 
+      F7                  EOX 
+
+      -- Note: If <device ID> = 7FH then the device should respond regardless of what <device ID> it is set to.
+
+      */
 
 // Device inquiry message format
 const DEVICE_INQUIRY = [
   SYSEX_START,       // F0 Start of SysEx
   UNIVERSAL_SYSEX,   // 7E Universal System Exclusive
-  0x00,             // 00 Device ID (channel 1)
+  DEVICE_ID_ALL,     // All devices should respond
   INQUIRY_MESSAGE,   // 06 Inquiry Message
-  SYSEX_END         // F7 End of SysEx
+  INQUIRY_REQUEST,   // identity request
+  SYSEX_END          // F7 End of SysEx
 ];
-
-// Add a device inquiry function
-const sendDeviceInquiry = async () => {
-  if (!midiOutput) {
-    setError('MIDI output not available');
-    return;
-  }
-
-  console.log('Sending device inquiry:', 
-    DEVICE_INQUIRY.map(b => `0x${b.toString(16).padStart(2, '0')}`));
-  
-  try {
-    await midiOutput.send(DEVICE_INQUIRY);
-  } catch (err) {
-    console.error('Error sending device inquiry:', err);
-    setError('Failed to send device inquiry');
-  }
-};
 
 // Message types from documentation
 const MSG_TYPES = {
@@ -73,6 +77,8 @@ export const M1Librarian = () => {
   const [activeView, setActiveView] = useState('library');
   const [backupInProgress, setBackupInProgress] = useState(false);
   const [backupProgress, setBackupProgress] = useState({ current: 0, total: 0 });
+  const [isM1Detected, setIsM1Detected] = useState(false);
+  const [deviceInfo, setDeviceInfo] = useState(null);
 
   useEffect(() => {
     const loadPatches = () => {
@@ -81,82 +87,85 @@ export const M1Librarian = () => {
         setPatches(JSON.parse(savedPatches));
       }
     };
-
-    const initMidi = async () => {
-      try {
-        if (!navigator.requestMIDIAccess) {
-          console.error('WebMIDI not supported');
-          setError('WebMIDI not supported in this browser');
-          return;
-        }
-
-        console.log('Requesting MIDI access...');
-        const access = await navigator.requestMIDIAccess({ sysex: true });
-        setMidiAccess(access);
-        
-        const outputs = Array.from(access.outputs.values());
-        const inputs = Array.from(access.inputs.values());
-        
-        console.log(`Found ${outputs.length} MIDI outputs:`, outputs.map(o => o.name));
-        console.log(`Found ${inputs.length} MIDI inputs:`, inputs.map(i => i.name));
-        
-        if (outputs.length === 0) {
-          console.error('No MIDI outputs found');
-          setError('No MIDI devices found');
-          return;
-        }
-
-        // Set up MIDI port change handler
-        access.onstatechange = (e) => {
-          console.log('MIDI state change:', e.port.type, e.port.state, e.port.name);
-          if (e.port.state === 'connected') {
-            console.log('MIDI device connected:', e.port.name);
-            if (e.port.type === 'output') {
-              setMidiOutput(e.port);
-            } else if (e.port.type === 'input') {
-              setMidiInput(e.port);
-            }
-          } else if (e.port.state === 'disconnected') {
-            console.log('MIDI device disconnected:', e.port.name);
-            if (e.port.type === 'output' && midiOutput?.id === e.port.id) {
-              setMidiOutput(null);
-            } else if (e.port.type === 'input' && midiInput?.id === e.port.id) {
-              setMidiInput(null);
-            }
+      const initMidi = async () => {
+          console.log('Initializing MIDI...');
+          try {
+              const access = await navigator.requestMIDIAccess({ sysex: true });
+              setMidiAccess(access);
+              
+              const outputs = Array.from(access.outputs.values());
+              const inputs = Array.from(access.inputs.values());
+              
+              console.log(`Found ${outputs.length} MIDI outputs:`, outputs.map(o => o.name));
+              console.log(`Found ${inputs.length} MIDI inputs:`, inputs.map(i => i.name));
+              
+              // Set up ports only if not already set
+              if (!midiOutput && outputs.length > 0) {
+                  console.log('Setting MIDI output:', outputs[0].name);
+                  setMidiOutput(outputs[0]);
+              }
+              if (!midiInput && inputs.length > 0) {
+                  console.log('Setting MIDI input:', inputs[0].name);
+                  const input = inputs[0];
+                  setMidiInput(input);
+                  input.onmidimessage = handleMIDIMessage;
+              }
+  
+              // Handle state changes
+              access.onstatechange = (e) => {
+                  const { port } = e;
+                  console.log(`MIDI port ${port.state}: ${port.type} - ${port.name}`);
+              };
+              
+          } catch (err) {
+              console.error('MIDI initialization error:', err);
           }
-        };
-        
-        if (outputs.length > 0) {
-          setMidiOutput(outputs[0]);
-          console.log('Selected MIDI output:', outputs[0].name);
-        }
-        if (inputs.length > 0) {
-          const input = inputs[0];
-          setMidiInput(input);
-          console.log('Selected MIDI input:', input.name);
-          input.onmidimessage = handleMIDIMessage;
-        }
-
-        // Send device inquiry after successful connection
-        if (outputs.length > 0) {
-          await sendDeviceInquiry();
-        }
-        
-      } catch (err) {
-        console.error('MIDI initialization error:', err);
-        setError('Error initializing MIDI: ' + err.message);
-      }
-    };
-
-    loadPatches();
-    initMidi();
-
-    return () => {
-      if (midiInput) {
-        midiInput.onmidimessage = null;
-      }
-    };
+      };
+  
+      initMidi();
+  
+      // Cleanup
+      return () => {
+          if (midiInput) {
+              midiInput.onmidimessage = null;
+          }
+      };
+    
   }, []);
+
+  useEffect(() => {
+    let retryCount = 0;
+    const maxRetries = 3;
+    let retryTimer;
+
+    const tryDeviceInquiry = async () => {
+        if (!midiOutput) return;
+
+        console.log('Sending device inquiry...');
+        try {
+            await midiOutput.send(DEVICE_INQUIRY);
+            retryCount++;
+            
+            // Set up retry if we haven't hit max and haven't detected an M1
+            if (retryCount < maxRetries && !isM1Detected) {
+                retryTimer = setTimeout(tryDeviceInquiry, 1000);
+            }
+        } catch (err) {
+            console.error('Error sending device inquiry:', err);
+        }
+    };
+
+    if (midiOutput) {
+        tryDeviceInquiry();
+    }
+
+    // Cleanup
+    return () => {
+        if (retryTimer) clearTimeout(retryTimer);
+    };
+}, [midiOutput, isM1Detected]);
+
+
 
   useEffect(() => {
     localStorage.setItem('m1patches', JSON.stringify(patches));
@@ -164,19 +173,19 @@ export const M1Librarian = () => {
 
   const handleMIDIMessage = (event) => {
     const data = Array.from(event.data);
-    
-    // Log all incoming MIDI data for debugging
-    console.log('Raw MIDI message:', {
-      type: data[0].toString(16),
-      length: data.length,
-      data: data.map(b => `0x${b.toString(16).padStart(2, '0')}`),
-      ascii: data.map(b => b >= 32 && b <= 126 ? String.fromCharCode(b) : '.').join('')
+    if (event.data[0] === 0xFE) {  // Active Sensing
+      return;  // Ignore these messages completely
+  }
+    /*
+        console.log('Raw MIDI message:', {  // <-- This is logging before the filter
+        type: data[0].toString(16),
+        length: data.length,
+        data: Array.from(data),
+        ascii: data.map(b => b >= 32 && b <= 126 ? String.fromCharCode(b) : '.').join('')
     });
-
-    // Ignore Active Sensing and Timing Clock
-    if (event.data[0] === 0xFE || event.data[0] === 0xF8) {
-      return;
-    }
+    */
+      console.log('MIDI message received:', 
+      data.map(b => `0x${b.toString(16).padStart(2, '0')}`));
 
     // For non-SysEx messages, just log them
     if (event.data[0] !== SYSEX_START) {
@@ -185,9 +194,33 @@ export const M1Librarian = () => {
       return;
     }
 
+    // Handle device inquiry response
+    if (data[1] === UNIVERSAL_SYSEX && data[3] === INQUIRY_MESSAGE && data[4] === INQUIRY_RESPONSE) {
+      const info = {
+          manufacturer: data[5],                    // Manufacturer ID (0x42 = Korg)
+          deviceFamily: (data[7] << 7) | data[6],   // 14 bits, LSB first
+          deviceMember: (data[9] << 7) | data[8],   // 14 bits, LSB first
+          softwareVersion: data[10]                 // 1st byte holds int
+      };
+  
+      const isKorgM1 = info.manufacturer === 0x42 && 
+                       info.deviceFamily === 0x19;
+  
+      console.log('Device Inquiry Response:', {
+          manufacturer: info.manufacturer === 0x42 ? 'Korg' : 'Unknown',
+          deviceFamily: `0x${info.deviceFamily.toString(16)}`,
+          deviceMember: `0x${info.deviceMember.toString(16)}`,
+          softwareVersion: Array.from(info.softwareVersion)
+              .map(b => b.toString(16).padStart(2, '0'))
+              .join('.')
+      });
+  
+      setDeviceInfo(info);
+      setIsM1Detected(isKorgM1);
+  }
+
     // Parse SysEx header
     if (data[1] === KORG_ID && data[3] === M1_ID) {
-      const messageType = data[4];
       console.log('M1 message header:', 
         data.slice(0, 6).map(b => `0x${b.toString(16).padStart(2, '0')}`));
       const messageType = data[4];
@@ -210,6 +243,27 @@ export const M1Librarian = () => {
           case 0x24: // DATA LOAD ERROR
             console.error('Data Load Error');
             setError('Data Load Error from M1');
+            break;
+
+          case 0x26: // Status/Acknowledgment
+            console.log('M1 Status/Acknowledgment received');
+            // Let's try immediately following up with another request
+            if (lastRequestType === 'program') {
+                console.log('Sending follow-up program request...');
+                // Send another message after acknowledgment
+                setTimeout(() => {
+                    midiOutput.send(new Uint8Array([
+                        SYSEX_START,
+                        KORG_ID,
+                        0x30,      // Global channel
+                        M1_ID,
+                        0x10,      // Program dump request
+                        0x00,      // Program number
+                        0x00,      // Bank
+                        SYSEX_END
+                    ]));
+                }, 100);
+            }
             break;
             
           case MSG_TYPES.ALL_PROGRAM_DUMP[1]:
@@ -332,26 +386,32 @@ export const M1Librarian = () => {
     }
 
     const sysex = new Uint8Array([
-      SYSEX_START,
-      KORG_ID,
-      CHANNEL,
-      M1_ID,
-      ...MSG_TYPES[`${selectedPatchType.toUpperCase()}_DUMP`],
-      0x00,  // Bank number
-      SYSEX_END
+      SYSEX_START,  // F0
+      KORG_ID,      // 42
+      0x31,         // Channel 1
+      M1_ID,        // 19
+      0x00,         // 0001 0000 split across
+      0x01,         // these two bytes
+      0x00,
+      0x00,
+      SYSEX_END     // F7
+  ]);
+/*
+    const sysex = new Uint8Array([
+        SYSEX_START,  // F0
+        KORG_ID,      // 42
+        CHANNEL,      // 30
+        M1_ID,        // 19
+        0x01,         // Program Parameter Dump Request
+        0x00,
+        0x00,         // Program number
+        SYSEX_END     // F7
     ]);
+*/
 
-    console.log('Sending MIDI SysEx:', 
-      Array.from(sysex).map(b => `0x${b.toString(16).padStart(2, '0')}`));
-    
-    try {
-      await midiOutput.send(sysex);
-      console.log('SysEx message sent successfully');
-    } catch (err) {
-      console.error('Error sending MIDI message:', err);
-      setError('Failed to send MIDI message');
-    }
-  };
+    console.log('Requesting patch:', Array.from(sysex).map(b => `0x${b.toString(16)}`));
+    await midiOutput.send(sysex);
+};
 
   const startBulkBackup = async () => {
     if (!midiOutput || !midiInput) {
@@ -443,164 +503,153 @@ export const M1Librarian = () => {
         <CardTitle>Korg M1 Patch Manager</CardTitle>
       </CardHeader>
       <CardContent>
-        {!midiAccess && (
-          <Alert className="mb-4">
-            <AlertDescription>
-              WebMIDI is not available. Please ensure you're using a supported browser (Chrome, Edge, or Opera).
-            </AlertDescription>
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
 
-        {midiAccess && !midiOutput && (
-          <Alert className="mb-4">
-            <AlertDescription>
-              No MIDI devices detected. Please connect a MIDI interface and refresh the page.
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {midiAccess && midiOutput && (
-          <div className="mb-4 text-sm">
-            <p>MIDI Interface Connected:</p>
-            <div className="p-2 bg-gray-100 rounded mt-1">
-              <p>Output: {midiOutput.name}</p>
-              {midiInput && <p>Input: {midiInput.name}</p>}
-            </div>
+        {/* Connection Status */}
+        <div className="mb-4 p-4 bg-gray-100 rounded">
+          <h3 className="font-semibold mb-2">Connection Status</h3>
+          <div className="text-sm space-y-1">
+            {!midiOutput ? (
+              <p className="text-yellow-600">⚠ No MIDI Interface Connected</p>
+            ) : !deviceInfo ? (
+              <p>Detecting device...</p>
+            ) : (
+              <>
+               <ul>
+               <li>Manufacturer: {deviceInfo.manufacturer === 0x42 ? 'Korg' : 'Unknown'}</li>
+               <li>Device Family: {isM1Detected ? 'M1' : `Unknown (0x${deviceInfo.deviceFamily.toString(16)})`}</li>
+               <li>Member Code: {`0x${deviceInfo.deviceMember.toString(16)}`}</li>
+               <li>Software Version: #{deviceInfo.softwareVersion.toString(16)}</li>
+               </ul>
+              </>
+            )}
           </div>
-        )}
+        </div>
+
+        {/* Debug Tools - only show if M1 detected */}
+{isM1Detected && (
+  <div className="mb-4">
+    <M1Debug midiOutput={midiOutput} midiInput={midiInput} />
+    <M1ProtocolTest midiOutput={midiOutput} midiInput={midiInput} />
+    <M1ProgramDump midiOutput={midiOutput} midiInput={midiInput} />
+  </div>
+)}
 
         <div className="space-y-4">
+          {/* Basic MIDI test - always available if MIDI connected */}
           <div className="flex space-x-4">
-            <Button
-              onClick={() => setSelectedPatchType('program')}
-              variant={selectedPatchType === 'program' ? 'default' : 'outline'}
-            >
-              Programs
-            </Button>
-            <Button
-              onClick={() => setSelectedPatchType('combination')}
-              variant={selectedPatchType === 'combination' ? 'default' : 'outline'}
-            >
-              Combinations
-            </Button>
-            <Button
-              onClick={() => setSelectedPatchType('sequence')}
-              variant={selectedPatchType === 'sequence' ? 'default' : 'outline'}
-            >
-              Songs
-            </Button>
-          </div>
-
-          <div className="flex space-x-4">
-            <Button 
-              onClick={requestPatch} 
-              className="flex items-center space-x-2"
-              disabled={backupInProgress || !isM1Detected}
-            >
-              <Download className="w-4 h-4" />
-              <span>Request Current Patch</span>
-            </Button>
-            <Button
-              onClick={startBulkBackup}
-              className="flex items-center space-x-2"
-              disabled={backupInProgress || !isM1Detected}
-            >
-              <Save className="w-4 h-4" />
-              <span>Backup All Patches</span>
-            </Button>
             <Button
               onClick={playTestPattern}
               className="flex items-center space-x-2"
-              disabled={!midiOutput}  // Only disable if no MIDI at all
+              disabled={!midiOutput}
             >
               <Music className="w-4 h-4" />
               <span>Test MIDI</span>
             </Button>
-            <Button
-              onClick={sendDeviceInquiry}
-              className="flex items-center space-x-2"
-              disabled={!midiOutput}
-            >
-              <Download className="w-4 h-4" />
-              <span>Identify Device</span>
-            </Button>
           </div>
 
-          {backupInProgress && (
-            <div className="mt-4">
-              <div className="text-sm text-muted-foreground">
-                Backing up patches: {backupProgress.current} / {backupProgress.total}
+          {/* M1-specific features - only show if M1 detected */}
+          {isM1Detected && (
+            <>
+              <div className="flex space-x-4">
+                <Button
+                  onClick={() => setSelectedPatchType('program')}
+                  variant={selectedPatchType === 'program' ? 'default' : 'outline'}
+                >
+                  Programs
+                </Button>
+                <Button
+                  onClick={() => setSelectedPatchType('combination')}
+                  variant={selectedPatchType === 'combination' ? 'default' : 'outline'}
+                >
+                  Combinations
+                </Button>
+                <Button
+                  onClick={() => setSelectedPatchType('sequence')}
+                  variant={selectedPatchType === 'sequence' ? 'default' : 'outline'}
+                >
+                  Songs
+                </Button>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
-                <div 
-                  className="bg-primary h-2.5 rounded-full" 
-                  style={{ width: `${(backupProgress.current / backupProgress.total) * 100}%` }}
-                ></div>
+
+              <div className="flex space-x-4">
+                <Button 
+                  onClick={requestPatch} 
+                  className="flex items-center space-x-2"
+                  disabled={backupInProgress}
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Request Current Patch</span>
+                </Button>
+                <Button
+                  onClick={startBulkBackup}
+                  className="flex items-center space-x-2"
+                  disabled={backupInProgress}
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Backup All Patches</span>
+                </Button>
               </div>
-            </div>
-          )}
 
-          <div className="flex space-x-4 mt-8 mb-4">
-            <Button
-              variant={activeView === 'library' ? 'default' : 'outline'}
-              onClick={() => setActiveView('library')}
-              className="flex items-center space-x-2"
-            >
-              <Database className="w-4 h-4" />
-              <span>My Library</span>
-            </Button>
-            <Button
-              variant={activeView === 'browser' ? 'default' : 'outline'}
-              onClick={() => setActiveView('browser')}
-              className="flex items-center space-x-2"
-            >
-              <Download className="w-4 h-4" />
-              <span>Patch Browser</span>
-            </Button>
-          </div>
-
-          {activeView === 'browser' ? (
-            <PatchBrowser 
-              onSendPatch={sendPatch}
-              selectedPatchType={selectedPatchType}
-            />
-          ) : (
-            <div className="border rounded-lg p-4">
-              <h3 className="text-lg font-semibold mb-4">Stored Patches</h3>
-              <div className="space-y-2">
-                {patches
-                  .filter(patch => patch.type === selectedPatchType)
-                  .map(patch => (
+              {/* Progress indicator */}
+              {backupInProgress && (
+                <div className="mt-4">
+                  <div className="text-sm text-muted-foreground">
+                    Backing up patches: {backupProgress.current} / {backupProgress.total}
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
                     <div 
-                      key={patch.id}
-                      className="flex items-center justify-between p-2 bg-gray-100 rounded"
-                    >
-                      <span>
-                        {patch.name || `${patch.type} - ${new Date(patch.timestamp).toLocaleString()}`}
-                      </span>
-                      <div className="space-x-2">
-                        <Button
-                          size="sm"
-                          onClick={() => sendPatch(patch)}
-                          className="flex items-center space-x-1"
+                      className="bg-primary h-2.5 rounded-full" 
+                      style={{ width: `${(backupProgress.current / backupProgress.total) * 100}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+
+              {/* Patch list */}
+              {patches.length > 0 && (
+                <div className="border rounded-lg p-4">
+                  <h3 className="text-lg font-semibold mb-4">Stored Patches</h3>
+                  <div className="space-y-2">
+                    {patches
+                      .filter(patch => patch.type === selectedPatchType)
+                      .map(patch => (
+                        <div 
+                          key={patch.id}
+                          className="flex items-center justify-between p-2 bg-gray-100 rounded"
                         >
-                          <Upload className="w-4 h-4" />
-                          <span>Send</span>
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => deletePatch(patch.id)}
-                          className="flex items-center space-x-1"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          <span>Delete</span>
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            </div>
+                          <span>
+                            {patch.name || `${patch.type} - ${new Date(patch.timestamp).toLocaleString()}`}
+                          </span>
+                          <div className="space-x-2">
+                            <Button
+                              size="sm"
+                              onClick={() => sendPatch(patch)}
+                              className="flex items-center space-x-1"
+                            >
+                              <Upload className="w-4 h-4" />
+                              <span>Send</span>
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => deletePatch(patch.id)}
+                              className="flex items-center space-x-1"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              <span>Delete</span>
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </CardContent>
