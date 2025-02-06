@@ -1,660 +1,555 @@
 import React, { useState, useEffect } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Save, Download, Upload, Trash2, Database, Music } from 'lucide-react';
-import M1Debug from './M1Debug';
-import M1ProtocolTest from './M1ProtocolTest';
-import M1ProgramDump from './M1ProgramDump';
+import { RefreshCw, AlertCircle, Check } from 'lucide-react';
 
-import { 
-  parseProgramData,
-  parseCombinationData,
-  parseGlobalData,
-  parseSequenceData
-} from '../utils/M1Parsers';
 
-// MIDI Constants
-const SYSEX_START = 0xF0;
-const SYSEX_END = 0xF7;
-const UNIVERSAL_SYSEX = 0x7E;
-const INQUIRY_MESSAGE = 0x06;
-const KORG_ID = 0x42;
-const CHANNEL = 0x31;  // Global channel 0
-const M1_ID = 0x19;    // From documentation
-const DEVICE_ID_ALL = 0x7F;  // Will make any device respond
-const INQUIRY_REQUEST = 0x01;
-const INQUIRY_RESPONSE = 0x02;
-
-/*
-The format of the inquiry message is as follows:
-
-F0 7E <device ID> 06 01 F7 
-
-      F0 7E <device ID>   Universal System Exclusive Non-real time header 
-      06                  General Information (sub-ID#1) 
-      01                  Identity Request (sub-ID#2) 
-      F7                  EOX 
-
-      -- Note: If <device ID> = 7FH then the device should respond regardless of what <device ID> it is set to.
-
-      */
-
-// Device inquiry message format
-const DEVICE_INQUIRY = [
-  SYSEX_START,       // F0 Start of SysEx
-  UNIVERSAL_SYSEX,   // 7E Universal System Exclusive
-  DEVICE_ID_ALL,     // All devices should respond
-  INQUIRY_MESSAGE,   // 06 Inquiry Message
-  INQUIRY_REQUEST,   // identity request
-  SYSEX_END          // F7 End of SysEx
-];
-
-// Message types from documentation
-const MSG_TYPES = {
-  PROGRAM_DUMP: [0x01, 0x00],          // Program Parameter Dump
-  ALL_PROGRAM_DUMP: [0x01, 0x0C],      // All Program Parameter Dump
-  COMBINATION_DUMP: [0x01, 0x01],      // Combination Parameter Dump
-  ALL_COMBINATION_DUMP: [0x01, 0x0D],  // All Combination Parameter Dump
-  GLOBAL_DUMP: [0x01, 0x0E],          // Global Parameter Dump
-  SEQUENCE_DUMP: [0x01, 0x0F],        // Sequence Data Dump
-};
-
-const DUMP_SIZES = {
-  PROGRAM: 143,         // Each program is 143 bytes
-  COMBINATION: 124,     // Each combination is 124 bytes
-  GLOBAL: 51,          // Global parameters are 51 bytes
-  SEQUENCE_HEADER: 28   // Variable size, header is 28 bytes
-};
-
-export const M1Librarian = () => {
+export default function KorgM1Librarian() {
   const [midiAccess, setMidiAccess] = useState(null);
-  const [midiOutput, setMidiOutput] = useState(null);
-  const [midiInput, setMidiInput] = useState(null);
+  const [midiOutputs, setMidiOutputs] = useState([]);
+  const [selectedDevice, setSelectedDevice] = useState(null);
   const [patches, setPatches] = useState([]);
-  const [error, setError] = useState('');
-  const [selectedPatchType, setSelectedPatchType] = useState('program');
-  const [activeView, setActiveView] = useState('library');
-  const [backupInProgress, setBackupInProgress] = useState(false);
-  const [backupProgress, setBackupProgress] = useState({ current: 0, total: 0 });
-  const [isM1Detected, setIsM1Detected] = useState(false);
+  const [cardPatches, setCardPatches] = useState([]);
   const [deviceInfo, setDeviceInfo] = useState(null);
+  const [isM1Detected, setIsM1Detected] = useState(false);
+  const [hasRequestedPatches, setHasRequestedPatches] = useState(false);
 
-  useEffect(() => {
-    const loadPatches = () => {
-      const savedPatches = localStorage.getItem('m1patches');
-      if (savedPatches) {
-        setPatches(JSON.parse(savedPatches));
-      }
-    };
-      const initMidi = async () => {
-          console.log('Initializing MIDI...');
-          try {
-              const access = await navigator.requestMIDIAccess({ sysex: true });
-              setMidiAccess(access);
-              
-              const outputs = Array.from(access.outputs.values());
-              const inputs = Array.from(access.inputs.values());
-              
-              console.log(`Found ${outputs.length} MIDI outputs:`, outputs.map(o => o.name));
-              console.log(`Found ${inputs.length} MIDI inputs:`, inputs.map(i => i.name));
-              
-              // Set up ports only if not already set
-              if (!midiOutput && outputs.length > 0) {
-                  console.log('Setting MIDI output:', outputs[0].name);
-                  setMidiOutput(outputs[0]);
-              }
-              if (!midiInput && inputs.length > 0) {
-                  console.log('Setting MIDI input:', inputs[0].name);
-                  const input = inputs[0];
-                  setMidiInput(input);
-                  input.onmidimessage = handleMIDIMessage;
-              }
-  
-              // Handle state changes
-              access.onstatechange = (e) => {
-                  const { port } = e;
-                  console.log(`MIDI port ${port.state}: ${port.type} - ${port.name}`);
-              };
-              
-          } catch (err) {
-              console.error('MIDI initialization error:', err);
-          }
-      };
-  
-      initMidi();
-  
-      // Cleanup
-      return () => {
-          if (midiInput) {
-              midiInput.onmidimessage = null;
-          }
-      };
-    
-  }, []);
+  const [internalLoading, setInternalLoading] = useState(false);
+  const [cardLoading, setCardLoading] = useState(false);
+  const [cardError, setCardError] = useState(null);
 
-  useEffect(() => {
-    let retryCount = 0;
-    const maxRetries = 3;
-    let retryTimer;
+  const RENAME_PROGRAM = 0x41;  // Parameter change message type
 
-    const tryDeviceInquiry = async () => {
-        if (!midiOutput) return;
-
-        console.log('Sending device inquiry...');
-        try {
-            await midiOutput.send(DEVICE_INQUIRY);
-            retryCount++;
-            
-            // Set up retry if we haven't hit max and haven't detected an M1
-            if (retryCount < maxRetries && !isM1Detected) {
-                retryTimer = setTimeout(tryDeviceInquiry, 1000);
-            }
-        } catch (err) {
-            console.error('Error sending device inquiry:', err);
-        }
-    };
-
-    if (midiOutput) {
-        tryDeviceInquiry();
-    }
-
-    // Cleanup
-    return () => {
-        if (retryTimer) clearTimeout(retryTimer);
-    };
-}, [midiOutput, isM1Detected]);
-
-
-
-  useEffect(() => {
-    localStorage.setItem('m1patches', JSON.stringify(patches));
-  }, [patches]);
-
-  const handleMIDIMessage = (event) => {
-    const data = Array.from(event.data);
-    if (event.data[0] === 0xFE) {  // Active Sensing
-      return;  // Ignore these messages completely
-  }
-    /*
-        console.log('Raw MIDI message:', {  // <-- This is logging before the filter
-        type: data[0].toString(16),
-        length: data.length,
-        data: Array.from(data),
-        ascii: data.map(b => b >= 32 && b <= 126 ? String.fromCharCode(b) : '.').join('')
-    });
-    */
-      console.log('MIDI message received:', 
-      data.map(b => `0x${b.toString(16).padStart(2, '0')}`));
-
-    // For non-SysEx messages, just log them
-    if (event.data[0] !== SYSEX_START) {
-      console.log('MIDI message header:', 
-        data.slice(0, 4).map(b => `0x${b.toString(16).padStart(2, '0')}`));
-      return;
-    }
-
-    // Handle device inquiry response
-    if (data[1] === UNIVERSAL_SYSEX && data[3] === INQUIRY_MESSAGE && data[4] === INQUIRY_RESPONSE) {
-      const info = {
-          manufacturer: data[5],                    // Manufacturer ID (0x42 = Korg)
-          deviceFamily: (data[7] << 7) | data[6],   // 14 bits, LSB first
-          deviceMember: (data[9] << 7) | data[8],   // 14 bits, LSB first
-          softwareVersion: data[10]                 // 1st byte holds int
-      };
-  
-      const isKorgM1 = info.manufacturer === 0x42 && 
-                       info.deviceFamily === 0x19;
-  
-      console.log('Device Inquiry Response:', {
-          manufacturer: info.manufacturer === 0x42 ? 'Korg' : 'Unknown',
-          deviceFamily: `0x${info.deviceFamily.toString(16)}`,
-          deviceMember: `0x${info.deviceMember.toString(16)}`,
-          softwareVersion: Array.from(info.softwareVersion)
-              .map(b => b.toString(16).padStart(2, '0'))
-              .join('.')
-      });
-  
-      setDeviceInfo(info);
-      setIsM1Detected(isKorgM1);
-  }
-
-    // Parse SysEx header
-    if (data[1] === KORG_ID && data[3] === M1_ID) {
-      console.log('M1 message header:', 
-        data.slice(0, 6).map(b => `0x${b.toString(16).padStart(2, '0')}`));
-      const messageType = data[4];
-      const messageData = data.slice(6, -1); // Remove header and EOX
-
-      try {
-        switch(messageType) {
-          case 0x78: // Might be "ready to send"
-            console.log('M1 Ready signal received');
-            break;
-            
-          case 0x76: // Might be "dump starting"
-            console.log('M1 Dump starting signal received');
-            break;
-
-          case 0x23: // DATA LOAD COMPLETED
-            console.log('Data Load Completed');
-            break;
-            
-          case 0x24: // DATA LOAD ERROR
-            console.error('Data Load Error');
-            setError('Data Load Error from M1');
-            break;
-
-          case 0x26: // Status/Acknowledgment
-            console.log('M1 Status/Acknowledgment received');
-            // Let's try immediately following up with another request
-            if (lastRequestType === 'program') {
-                console.log('Sending follow-up program request...');
-                // Send another message after acknowledgment
-                setTimeout(() => {
-                    midiOutput.send(new Uint8Array([
-                        SYSEX_START,
-                        KORG_ID,
-                        0x30,      // Global channel
-                        M1_ID,
-                        0x10,      // Program dump request
-                        0x00,      // Program number
-                        0x00,      // Bank
-                        SYSEX_END
-                    ]));
-                }, 100);
-            }
-            break;
-            
-          case MSG_TYPES.ALL_PROGRAM_DUMP[1]:
-            console.log('Receiving Program Parameter Dump');
-            handleProgramDump(messageData);
-            break;
-            
-          case MSG_TYPES.ALL_COMBINATION_DUMP[1]:
-            console.log('Receiving Combination Parameter Dump');
-            handleCombinationDump(messageData);
-            break;
-            
-          case MSG_TYPES.GLOBAL_DUMP[1]:
-            console.log('Receiving Global Parameter Dump');
-            handleGlobalDump(messageData);
-            break;
-            
-          case MSG_TYPES.SEQUENCE_DUMP[1]:
-            console.log('Receiving Sequence Data Dump');
-            handleSequenceDump(messageData);
-            break;
-            
-          default:
-            console.log('Unknown message type:', messageType);
-        }
-      } catch (err) {
-        console.error('Error processing MIDI message:', err);
-        setError('Error processing MIDI data');
-      }
-    }
-  };
-
-  const handleProgramDump = (data) => {
-    const programCount = Math.floor(data.length / DUMP_SIZES.PROGRAM);
-    console.log(`Processing ${programCount} programs`);
-    
-    for(let i = 0; i < programCount; i++) {
-      const start = i * DUMP_SIZES.PROGRAM;
-      const programData = data.slice(start, start + DUMP_SIZES.PROGRAM);
-      const parsedProgram = parseProgramData(programData);
-      
-      const newPatch = {
-        id: Date.now() + i,
-        type: 'program',
-        number: i,
-        data: programData,
-        parsedData: parsedProgram,
-        name: parsedProgram.name || `Program ${i}`,
-        timestamp: new Date().toISOString()
-      };
-      
-      setPatches(prev => [...prev, newPatch]);
-      setBackupProgress(prev => ({
-        ...prev,
-        current: i + 1
-      }));
-    }
-  };
-
-  const handleCombinationDump = (data) => {
-    const combiCount = Math.floor(data.length / DUMP_SIZES.COMBINATION);
-    console.log(`Processing ${combiCount} combinations`);
-    
-    for(let i = 0; i < combiCount; i++) {
-      const start = i * DUMP_SIZES.COMBINATION;
-      const combiData = data.slice(start, start + DUMP_SIZES.COMBINATION);
-      const parsedCombi = parseCombinationData(combiData);
-      
-      const newPatch = {
-        id: Date.now() + i,
-        type: 'combination',
-        number: i,
-        data: combiData,
-        parsedData: parsedCombi,
-        name: parsedCombi.name || `Combination ${i}`,
-        timestamp: new Date().toISOString()
-      };
-      
-      setPatches(prev => [...prev, newPatch]);
-    }
-  };
-
-  const handleGlobalDump = (data) => {
-    if (data.length !== DUMP_SIZES.GLOBAL) {
-      console.error('Invalid global data size');
-      return;
-    }
-
-    const parsedGlobal = parseGlobalData(data);
-    const newPatch = {
-      id: Date.now(),
-      type: 'global',
-      data: data,
-      parsedData: parsedGlobal,
-      name: 'Global Settings',
-      timestamp: new Date().toISOString()
-    };
-    
-    setPatches(prev => [...prev, newPatch]);
-  };
-
-  const handleSequenceDump = (data) => {
-    const parsedSequence = parseSequenceData(data);
-    const newPatch = {
-      id: Date.now(),
-      type: 'sequence',
-      data: data,
-      parsedData: parsedSequence,
-      name: parsedSequence.name || 'Sequence Data',
-      timestamp: new Date().toISOString()
-    };
-    
-    setPatches(prev => [...prev, newPatch]);
-  };
-
-  const requestPatch = async () => {
-    if (!midiOutput || !midiInput) {
-      setError('MIDI device not connected');
-      return;
-    }
-
-    const sysex = new Uint8Array([
-      SYSEX_START,  // F0
-      KORG_ID,      // 42
-      0x31,         // Channel 1
-      M1_ID,        // 19
-      0x00,         // 0001 0000 split across
-      0x01,         // these two bytes
-      0x00,
-      0x00,
-      SYSEX_END     // F7
-  ]);
-/*
-    const sysex = new Uint8Array([
-        SYSEX_START,  // F0
-        KORG_ID,      // 42
-        CHANNEL,      // 30
-        M1_ID,        // 19
-        0x01,         // Program Parameter Dump Request
-        0x00,
-        0x00,         // Program number
-        SYSEX_END     // F7
-    ]);
-*/
-
-    console.log('Requesting patch:', Array.from(sysex).map(b => `0x${b.toString(16)}`));
-    await midiOutput.send(sysex);
+const BANKS = {
+  INTERNAL: { id: 0, name: "INT", size: 100 },
+  CARD: { id: 1, name: "CARD", size: 64 }
 };
 
-  const startBulkBackup = async () => {
-    if (!midiOutput || !midiInput) {
-      setError('MIDI device not connected');
+const TIMEOUT_MS = {
+  DEVICE_INQUIRY: 5000,
+  PATCH_DUMP: 15000,  // 15 seconds for patch dump response
+  BETWEEN_RETRIES: 2000
+};
+
+const MAX_RETRIES = 3;
+
+  useEffect(() => {
+    if (navigator.requestMIDIAccess) {
+      navigator.requestMIDIAccess({ sysex: true })
+        .then(onMIDISuccess)
+        .catch(() => console.error("MIDI access denied or unavailable."));
+    } else {
+      console.error("WebMIDI not supported in this browser.");
+    }
+  }, []);
+  
+  function onMIDISuccess(midi) {
+    setMidiAccess(midi);
+    const outputs = Array.from(midi.outputs.values());
+    setMidiOutputs(outputs);
+    if (outputs.length > 0) {
+      setSelectedDevice(outputs[0]);
+    }
+  }
+
+  function sendSysEx(message) {
+    if (!selectedDevice || !("send" in selectedDevice)) {
+      console.warn("Skipping SysEx send: No valid MIDI output selected.");
       return;
     }
+    const data = new Uint8Array(message);
+    selectedDevice.send(data);
+  }
+  
+  useEffect(() => {
+    if (selectedDevice && !isM1Detected) {
+      console.log(`Starting polling for ${selectedDevice.name}`);
+      const interval = setInterval(() => {
+        const inquiryMessage = [0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7];
+        sendSysEx(inquiryMessage);
+      }, 5000);
 
-    setBackupInProgress(true);
-    setBackupProgress({ current: 0, total: 100 });
-
-    try {
-      // Request all program parameters
-      const sysex = new Uint8Array([
-        SYSEX_START,
-        KORG_ID,
-        CHANNEL,
-        M1_ID,
-        ...MSG_TYPES.ALL_PROGRAM_DUMP,
-        0x00,   // Bank 0
-        SYSEX_END
-      ]);
-
-      console.log('Sending ALL PROGRAM PARAMETER DUMP request:', 
-        Array.from(sysex).map(b => `0x${b.toString(16).padStart(2, '0')}`));
-      
-      await midiOutput.send(sysex);
-      console.log('Waiting for M1 response...');
-
-    } catch (err) {
-      console.error('Error during backup process:', err);
-      setError('Error during backup process');
-    } finally {
-      setBackupInProgress(false);
+      return () => {
+        console.log(`Stopping polling for ${selectedDevice.name}`);
+        clearInterval(interval);
+      };
     }
-  };
-
-  const playTestPattern = async () => {
-    if (!midiOutput) {
-      setError('MIDI output not available');
-      return;
+  }, [selectedDevice, isM1Detected]);
+  
+  function handleMIDIMessage(event) {
+    const data = event.data;
+    
+    // Device inquiry response
+    if (data[0] === 0xf0 && data[1] === 0x7e && data[3] === 0x06 && data[4] === 0x02) {
+        const manufacturer = data[5];
+        const deviceFamily = data[6];
+        const deviceMember = data[7];
+        const softwareVersion = data[8];
+        const isM1 = manufacturer === 0x42 && deviceFamily === 0x19;
+        setDeviceInfo({ manufacturer, deviceFamily, deviceMember, softwareVersion });
+        setIsM1Detected(isM1);
     }
 
-    const NOTE_ON = 0x90;  // Note On channel 1
-    const NOTE_OFF = 0x80;  // Note Off channel 1
-    const VELOCITY = 100;
+    // M1 responses
+    if (data[0] === 0xf0 && data[1] === 0x42 && data[3] === 0x19) {
+        switch(data[4]) {
+            case 0x26: // Acknowledgment
+                console.log('M1 acknowledged our request');
+                break;
 
-    const pattern = [
-      { note: 60, duration: 200 }, // Middle C
-      { note: 64, duration: 200 }, // E
-      { note: 67, duration: 200 }, // G
-      { note: 72, duration: 400 }, // High C
-    ];
+            case 0x4c: // Patch dump
+                const isCardBank = data[5] === BANKS.CARD.id;
+                if (isCardBank) {
+                    parsePatchDump(data, setCardPatches, BANKS.CARD);
+                } else {
+                    parsePatchDump(data, setPatches, BANKS.INTERNAL);
+                }
+                break;
 
-    try {
-      for (const { note, duration } of pattern) {
-        midiOutput.send([NOTE_ON, note, VELOCITY]);
-        console.log('Note On:', note);
-        
-        await new Promise(resolve => setTimeout(resolve, duration));
-        
-        midiOutput.send([NOTE_OFF, note, 0]);
-        console.log('Note Off:', note);
-        
-        await new Promise(resolve => setTimeout(resolve, 50));
+            case 0x24: // Error
+                const errorMessage = 'M1 reported error';
+                console.error(errorMessage);
+                if (cardLoading) {
+                    setCardError(errorMessage);
+                } else {
+                    setError(errorMessage);
+                }
+                break;
+            
+            case RENAME_PROGRAM:
+                  console.log('Rename acknowledged');
+                  // Update local state to reflect new name
+                  if (data[5] === BANKS.CARD.id) {
+                      setCardPatches(prev => {
+                          const newPatches = [...prev];
+                          newPatches[data[6]] = data.slice(7, -1);
+                          return newPatches;
+                      });
+                  } else {
+                      setPatches(prev => {
+                          const newPatches = [...prev];
+                          newPatches[data[6]] = data.slice(7, -1);
+                          return newPatches;
+                      });
+                  }
+                  break;
+        }
+    }
+}
+
+function requestPatchDump() {
+  setInternalLoading(true);
+  const message = [0xf0, 0x42, 0x30, 0x19, 0x1c, BANKS.INTERNAL.id, 0xf7];
+  
+  sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Internal bank dump")
+      .catch(error => {
+          console.error('Failed to get internal patches:', error);
+          setError('Failed to read internal patches');
+      })
+      .finally(() => setInternalLoading(false));
+}
+
+function requestCardPatchDump() {
+  setCardLoading(true);
+  setCardError(null);
+  const message = [0xf0, 0x42, 0x30, 0x19, 0x1c, BANKS.CARD.id, 0xf7];
+  
+  sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Card bank dump")
+      .catch(error => {
+          console.error('Failed to get card patches:', error);
+          setCardError('Failed to read card patches');
+      })
+      .finally(() => setCardLoading(false));
+}
+async function sendSysExWithRetry(message, timeoutMs, description) {
+  let attempts = 0;
+  while (attempts < MAX_RETRIES) {
+      try {
+          await sendSysExAndWaitForResponse(message, timeoutMs);
+          return true;
+      } catch (error) {
+          attempts++;
+          console.log(`${description} attempt ${attempts} failed:`, error);
+          if (attempts === MAX_RETRIES) {
+              throw new Error(`${description} failed after ${MAX_RETRIES} attempts`);
+          }
+          await new Promise(resolve => setTimeout(resolve, TIMEOUT_MS.BETWEEN_RETRIES));
       }
-    } catch (err) {
-      console.error('Error playing test pattern:', err);
-      setError('Failed to send MIDI notes');
-    }
+  }
+}
+
+function sendSysExAndWaitForResponse(message, timeoutMs) {
+  return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+          reject(new Error('Response timeout'));
+      }, timeoutMs);
+
+      function responseHandler(event) {
+          const data = event.data;
+          if (data[0] === 0xF0 && data[1] === 0x42) {
+              if (data[4] === 0x26) { // Acknowledgment
+                  console.log('Received acknowledgment');
+                  // Don't resolve yet - wait for actual data
+              } else if (data[4] === 0x4C) { // Patch dump
+                  clearTimeout(timeoutId);
+                  resolve(data);
+              } else if (data[4] === 0x24) { // Error
+                  clearTimeout(timeoutId);
+                  reject(new Error('Device reported error'));
+              }
+          }
+      }
+
+      midiInput.addEventListener('midimessage', responseHandler);
+      sendSysEx(message);
+  });
+}
+
+function formatCase(text, format) {
+  const words = text.trim().split(/[\s_-]+/);
+  switch(format) {
+      case 'snake':
+          return words.join('_').toLowerCase();
+      case 'kebab':
+          return words.join('-').toLowerCase();
+      case 'camel':
+          return words[0].toLowerCase() + words.slice(1).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+      case 'pascal':
+          return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+      case 'upper':
+          return text.toUpperCase();
+      case 'lower':
+          return text.toLowerCase();
+      default:
+          return text;
+  }
+}
+
+function renamePatch(patchId, newName, bank) {
+  // Create escaped SysEx message with new name
+  const paddedName = newName.padEnd(10, ' ');
+  const nameBytes = [...paddedName].map(c => c.charCodeAt(0));
+  const escapedData = escapeSysex(nameBytes);
+  
+  const message = [
+      0xF0, 
+      0x42,
+      0x30,
+      0x19,
+      RENAME_PROGRAM,
+      bank,
+      patchId,
+      ...escapedData,
+      0xF7
+  ];
+
+  return sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Rename patch");
+}
+
+
+
+function PatchRename({ patch, onRename, onCancel }) {
+  const [newName, setNewName] = useState(patch.name);
+
+  const handleFormat = (format) => {
+    setNewName(formatCase(newName, format));
   };
 
-  const sendPatch = (patch) => {
-    if (!midiOutput) {
-      setError('MIDI output not available');
-      return;
-    }
-
-    // Convert patch data to sysex format and send
-    midiOutput.send(patch.data);
-  };
-
-  const deletePatch = (patchId) => {
-    setPatches(patches.filter(patch => patch.id !== patchId));
+  const handleSave = () => {
+    const trimmedName = newName.slice(0, 10);
+    onRename(patch.id, trimmedName);
   };
 
   return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle>Korg M1 Patch Manager</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {/* Connection Status */}
-        <div className="mb-4 p-4 bg-gray-100 rounded">
-          <h3 className="font-semibold mb-2">Connection Status</h3>
-          <div className="text-sm space-y-1">
-            {!midiOutput ? (
-              <p className="text-yellow-600">⚠ No MIDI Interface Connected</p>
-            ) : !deviceInfo ? (
-              <p>Detecting device...</p>
-            ) : (
-              <>
-               <ul>
-               <li>Manufacturer: {deviceInfo.manufacturer === 0x42 ? 'Korg' : 'Unknown'}</li>
-               <li>Device Family: {isM1Detected ? 'M1' : `Unknown (0x${deviceInfo.deviceFamily.toString(16)})`}</li>
-               <li>Member Code: {`0x${deviceInfo.deviceMember.toString(16)}`}</li>
-               <li>Software Version: #{deviceInfo.softwareVersion.toString(16)}</li>
-               </ul>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Debug Tools - only show if M1 detected */}
-{isM1Detected && (
-  <div className="mb-4">
-    <M1Debug midiOutput={midiOutput} midiInput={midiInput} />
-    <M1ProtocolTest midiOutput={midiOutput} midiInput={midiInput} />
-    <M1ProgramDump midiOutput={midiOutput} midiInput={midiInput} />
-  </div>
-)}
-
-        <div className="space-y-4">
-          {/* Basic MIDI test - always available if MIDI connected */}
-          <div className="flex space-x-4">
-            <Button
-              onClick={playTestPattern}
-              className="flex items-center space-x-2"
-              disabled={!midiOutput}
-            >
-              <Music className="w-4 h-4" />
-              <span>Test MIDI</span>
-            </Button>
-          </div>
-
-          {/* M1-specific features - only show if M1 detected */}
-          {isM1Detected && (
-            <>
-              <div className="flex space-x-4">
-                <Button
-                  onClick={() => setSelectedPatchType('program')}
-                  variant={selectedPatchType === 'program' ? 'default' : 'outline'}
-                >
-                  Programs
-                </Button>
-                <Button
-                  onClick={() => setSelectedPatchType('combination')}
-                  variant={selectedPatchType === 'combination' ? 'default' : 'outline'}
-                >
-                  Combinations
-                </Button>
-                <Button
-                  onClick={() => setSelectedPatchType('sequence')}
-                  variant={selectedPatchType === 'sequence' ? 'default' : 'outline'}
-                >
-                  Songs
-                </Button>
-              </div>
-
-              <div className="flex space-x-4">
-                <Button 
-                  onClick={requestPatch} 
-                  className="flex items-center space-x-2"
-                  disabled={backupInProgress}
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Request Current Patch</span>
-                </Button>
-                <Button
-                  onClick={startBulkBackup}
-                  className="flex items-center space-x-2"
-                  disabled={backupInProgress}
-                >
-                  <Save className="w-4 h-4" />
-                  <span>Backup All Patches</span>
-                </Button>
-              </div>
-
-              {/* Progress indicator */}
-              {backupInProgress && (
-                <div className="mt-4">
-                  <div className="text-sm text-muted-foreground">
-                    Backing up patches: {backupProgress.current} / {backupProgress.total}
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
-                    <div 
-                      className="bg-primary h-2.5 rounded-full" 
-                      style={{ width: `${(backupProgress.current / backupProgress.total) * 100}%` }}
-                    ></div>
-                  </div>
-                </div>
-              )}
-
-              {/* Patch list */}
-              {patches.length > 0 && (
-                <div className="border rounded-lg p-4">
-                  <h3 className="text-lg font-semibold mb-4">Stored Patches</h3>
-                  <div className="space-y-2">
-                    {patches
-                      .filter(patch => patch.type === selectedPatchType)
-                      .map(patch => (
-                        <div 
-                          key={patch.id}
-                          className="flex items-center justify-between p-2 bg-gray-100 rounded"
-                        >
-                          <span>
-                            {patch.name || `${patch.type} - ${new Date(patch.timestamp).toLocaleString()}`}
-                          </span>
-                          <div className="space-x-2">
-                            <Button
-                              size="sm"
-                              onClick={() => sendPatch(patch)}
-                              className="flex items-center space-x-1"
-                            >
-                              <Upload className="w-4 h-4" />
-                              <span>Send</span>
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => deletePatch(patch.id)}
-                              className="flex items-center space-x-1"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                              <span>Delete</span>
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="space-y-3">
+      <div className="flex space-x-2">
+        <input
+          type="text"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          maxLength={10}
+          className="flex-1 px-3 py-1 rounded border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+        />
+        <button
+          onClick={handleSave}
+          className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+        >
+          Save
+        </button>
+        <button
+          onClick={onCancel}
+          className="px-3 py-1 bg-gray-100 text-gray-600 rounded text-sm hover:bg-gray-200"
+        >
+          Cancel
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {['snake', 'kebab', 'camel', 'pascal', 'upper', 'lower'].map((format) => (
+          <button
+            key={format}
+            onClick={() => handleFormat(format)}
+            className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+          >
+            {format}
+          </button>
+        ))}
+      </div>
+    </div>
   );
-};
+}
 
-export default M1Librarian;
+function escapeSysex(data) {
+  let result = [];
+  let dataIndex = 0;
+  
+  while (dataIndex < data.length) {
+      // Calculate MS bits for next 7 bytes
+      let msBits = 0;
+      for (let i = 0; i < 7; i++) {
+          if (dataIndex + i < data.length) {
+              msBits = msBits | ((data[dataIndex + i] & 0x80) >> (7 - i));
+          }
+      }
+      result.push(msBits);
+      
+      // Add the lower 7 bits of each byte
+      for (let i = 0; i < 7; i++) {
+          if (dataIndex + i < data.length) {
+              result.push(data[dataIndex + i] & 0x7f);
+          }
+      }
+      dataIndex += 7;
+  }
+  return result;
+}
+
+  function parsePatchDump(data, setPatchesFunction, bank) {
+    console.log(`Received Patch Bank Dump for ${bank.name}`, data);
+    const rawData = unescapeSysex(data.slice(6, -1));
+    const patches = [];
+    let dataPointer = 0;
+    const PATCH_SIZE = 143;
+    const expectedPatches = bank.size;  // Use bank-specific size
+
+    while (dataPointer + PATCH_SIZE <= rawData.length && patches.length < expectedPatches) {
+        const patchNumber = dataPointer / PATCH_SIZE + 1;
+        const nameBytes = rawData.slice(dataPointer, dataPointer + 10);
+        const name = nameBytes.map(byte => String.fromCharCode(byte)).join("").trim();
+        patches.push(`${patchNumber}: ${name}`);
+        dataPointer += PATCH_SIZE;
+    }
+
+    console.log(`Extracted ${patches.length} patches from ${bank.name}:`, patches);
+    setPatchesFunction(patches);
+}
+  
+  function unescapeSysex(sysex) {
+    let result = [];
+    let index = 0;
+    while (index < sysex.length) {
+      let msb = sysex[index];
+      index++;
+      for (let i = 0; i < 7; i++) {
+        if (index < sysex.length) {
+          result.push(sysex[index] | ((msb & (1 << i)) << (7 - i)));
+        }
+        index++;
+      }
+    }
+    return result;
+  }
+
+  function PatchDisplay({ patch, bank }) {
+    const [isRenaming, setIsRenaming] = useState(false);
+  
+    const handleRename = async (id, newName) => {
+      try {
+        await renamePatch(id, newName, bank.id);
+        setIsRenaming(false);
+      } catch (error) {
+        console.error('Failed to rename patch:', error);
+        setError('Failed to rename patch');
+      }
+    };
+  
+    return (
+      <div className="p-3 rounded-md border border-gray-200 bg-white hover:border-blue-200 hover:shadow-sm transition-all">
+        {isRenaming ? (
+          <PatchRename
+            patch={patch}
+            onRename={handleRename}
+            onCancel={() => setIsRenaming(false)}
+          />
+        ) : (
+          <div className="flex justify-between items-center">
+            <span className="text-gray-700 font-medium">{patch}</span>
+            <button
+              onClick={() => setIsRenaming(true)}
+              className="px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 rounded"
+            >
+              Rename
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+  
+  useEffect(() => {
+    if (midiAccess) {
+      midiAccess.inputs.forEach(input => input.addEventListener("midimessage", handleMIDIMessage));
+      return () => {
+        midiAccess.inputs.forEach(input => input.removeEventListener("midimessage", handleMIDIMessage));
+      };
+    }
+  }, [midiAccess]);
+  
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <Card className="max-w-6xl mx-auto bg-white shadow-lg">
+        <CardHeader className="border-b bg-gray-50/50">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-2xl font-bold text-gray-800">
+              Korg M1 Patch Librarian
+            </CardTitle>
+            <div className="flex items-center space-x-2">
+              <select 
+                onChange={e => setSelectedDevice(midiOutputs[e.target.value])}
+                className="px-3 py-2 rounded-md border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                {midiOutputs.map((device, index) => (
+                  <option key={device.id} value={index}>{device.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-6">
+          {/* Connection Status Card */}
+          <Card className="mb-6 bg-gray-50 border-none">
+            <CardContent className="p-4">
+              <div className="flex items-center space-x-3">
+                {!selectedDevice ? (
+                  <>
+                    <AlertCircle className="w-5 h-5 text-yellow-500" />
+                    <span className="text-yellow-700">No MIDI Interface Connected</span>
+                  </>
+                ) : !deviceInfo ? (
+                  <>
+                    <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />
+                    <span className="text-blue-700">Detecting device...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-5 h-5 text-green-500" />
+                    <div className="flex space-x-6 text-sm text-gray-600">
+                      <span>Korg M1 {isM1Detected ? '✓' : '✗'}</span>
+                      <span>Version: #{deviceInfo.softwareVersion.toString(16)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Banks Grid */}
+          {isM1Detected && (
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Internal Bank */}
+              <div className="space-y-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-semibold text-gray-800">
+                    Internal Bank ({patches.length}/{BANKS.INTERNAL.size})
+                  </h2>
+                  <button
+                    onClick={requestPatchDump}
+                    disabled={internalLoading}
+                    className="inline-flex items-center px-3 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    {internalLoading ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Refresh
+                      </>
+                    )}
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-2">
+                  {[...Array(BANKS.INTERNAL.size)].map((_, index) => {
+                    const patch = patches[index];
+                    return patch ? (
+                      <PatchDisplay
+                        key={`internal-${index}`}
+                        patch={patch}
+                        bank={BANKS.INTERNAL}
+                      />
+                    ) : (
+                      <div key={`internal-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
+                        Empty Slot {index + 1}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Card Bank */}
+              <div className="space-y-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-semibold text-gray-800">
+                    Card Bank ({cardPatches.length}/{BANKS.CARD.size})
+                  </h2>
+                  <button
+                    onClick={requestCardPatchDump}
+                    disabled={cardLoading}
+                    className="inline-flex items-center px-3 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    {cardLoading ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Refresh
+                      </>
+                    )}
+                  </button>
+                </div>
+                {cardError ? (
+                  <Alert variant="destructive" className="mb-4">
+                    <AlertCircle className="w-4 h-4 mr-2" />
+                    <AlertDescription>{cardError}</AlertDescription>
+                  </Alert>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2">
+                    {[...Array(BANKS.CARD.size)].map((_, index) => {
+                      const patch = cardPatches[index];
+                      return patch ? (
+                        <PatchDisplay
+                          key={`card-${index}`}
+                          patch={patch}
+                          bank={BANKS.CARD}
+                        />
+                      ) : (
+                        <div key={`card-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
+                          Empty Slot {index + 1}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
