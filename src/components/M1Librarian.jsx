@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { RefreshCw, AlertCircle, Check } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 
 export default function KorgM1Librarian() {
@@ -14,20 +15,48 @@ export default function KorgM1Librarian() {
   const [isM1Detected, setIsM1Detected] = useState(false);
   const [hasRequestedPatches, setHasRequestedPatches] = useState(false);
 
+  const [cardCombinations, setCardCombinations] = useState([]);
+  const [internalCombinations, setInternalCombinations] = useState([]);
+
   const [internalLoading, setInternalLoading] = useState(false);
   const [cardLoading, setCardLoading] = useState(false);
   const [cardError, setCardError] = useState(null);
 
+  const [error, setError] = useState(null);
+  const [midiInput, setMidiInput] = useState(null);
+
   const RENAME_PROGRAM = 0x41;  // Parameter change message type
+
+  const [cardFormat, setCardFormat] = useState(null);
+
+  const COMBINATION_DUMP_REQUEST = 0x1D;
+
+
+const CARD_FORMAT = {
+    FULL: 0x00,      // 100 programs, 100 combinations
+    HALF: 0x01,      // 50 programs, 50 combinations, 3500 seq notes
+    SEQ_ONLY: 0x02   // 7700 seq notes only
+};
 
 const BANKS = {
   INTERNAL: { id: 0, name: "INT", size: 100 },
-  CARD: { id: 1, name: "CARD", size: 64 }
+  CARD: { 
+      id: 1, 
+      name: "CARD",
+      getSize: (format) => {
+          switch(format) {
+              case CARD_FORMAT.FULL: return 100;
+              case CARD_FORMAT.HALF: return 50;
+              case CARD_FORMAT.SEQ_ONLY: return 0;
+              default: return 0;
+          }
+      }
+  }
 };
 
 const TIMEOUT_MS = {
   DEVICE_INQUIRY: 5000,
-  PATCH_DUMP: 15000,  // 15 seconds for patch dump response
+  PATCH_DUMP: 15000,  // wait 15 seconds for patch dump response
   BETWEEN_RETRIES: 2000
 };
 
@@ -42,15 +71,92 @@ const MAX_RETRIES = 3;
       console.error("WebMIDI not supported in this browser.");
     }
   }, []);
+
+  async function requestAllData() {
+    try {
+        // Internal Bank
+        setInternalLoading(true);
+        console.log("Requesting internal programs...");
+        await requestPatchDump();
+        console.log("Requesting internal combinations...");
+        await requestInternalCombinations();
+        
+        // Card Bank
+        setCardLoading(true);
+        console.log("Requesting card programs...");
+        await requestCardPatchDump();
+        console.log("Requesting card combinations...");
+        await requestCardCombinations();
+    } catch (error) {
+        console.error("Error during data requests:", error);
+        setError("Failed to retrieve all data");
+    } finally {
+        setInternalLoading(false);
+        setCardLoading(false);
+    }
+}
+
+  function requestInternalCombinations() {
+    setInternalLoading(true);
+    const message = [0xf0, 0x42, 0x30, 0x19, COMBINATION_DUMP_REQUEST, BANKS.INTERNAL.id, 0xf7];
+    
+    sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Internal combinations dump")
+        .then(response => {
+            parseCombinationDump(response, setInternalCombinations, BANKS.INTERNAL);
+        })
+        .catch(error => {
+            console.error('Failed to get internal combinations:', error);
+            setError('Failed to read internal combinations');
+        })
+        .finally(() => setInternalLoading(false));
+}
+
+function requestCardCombinations() {
+  const message = [0xf0, 0x42, 0x30, 0x19, COMBINATION_DUMP_REQUEST, BANKS.CARD.id, 0xf7];
+  
+  sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Card combinations dump")
+      .then(response => {
+          parseCombinationDump(response, setCardCombinations, BANKS.CARD);
+      })
+      .catch(error => {
+          console.error('Failed to get card combinations:', error);
+          setCardError('Failed to read card combinations');
+      });
+}
+
+function parseCombinationDump(data, setCombinationsFunction, bank) {
+  console.log(`Received Combination Bank Dump for ${bank.name}`, data);
+  const rawData = unescapeSysex(data.slice(6, -1));
+  const combinations = [];
+  let dataPointer = 0;
+  const COMBINATION_SIZE = 124;  // Combinations are 124 bytes each
+  const expectedCombinations = bank.size;
+
+  while (dataPointer + COMBINATION_SIZE <= rawData.length && combinations.length < expectedCombinations) {
+      const combinationNumber = dataPointer / COMBINATION_SIZE + 1;
+      const nameBytes = rawData.slice(dataPointer, dataPointer + 10);
+      const isEmpty = nameBytes.every(byte => byte === 0);
+      const name = isEmpty ? "Empty" : nameBytes.map(byte => String.fromCharCode(byte)).join("").trim();
+      combinations.push(`${combinationNumber}: ${name}`);
+      dataPointer += COMBINATION_SIZE;
+  }
+
+    console.log(`Extracted ${combinations.length} combinations from ${bank.name}:`, combinations);
+    setCombinationsFunction(combinations);
+}
   
   function onMIDISuccess(midi) {
     setMidiAccess(midi);
     const outputs = Array.from(midi.outputs.values());
+    const inputs = Array.from(midi.inputs.values());
     setMidiOutputs(outputs);
-    if (outputs.length > 0) {
-      setSelectedDevice(outputs[0]);
+    if (inputs.length > 0) {
+        setMidiInput(inputs[0]);  // Store the input reference
     }
-  }
+    if (outputs.length > 0) {
+        setSelectedDevice(outputs[0]);
+    }
+}
 
   function sendSysEx(message) {
     if (!selectedDevice || !("send" in selectedDevice)) {
@@ -60,6 +166,13 @@ const MAX_RETRIES = 3;
     const data = new Uint8Array(message);
     selectedDevice.send(data);
   }
+
+  useEffect(() => {
+    if (isM1Detected && !hasRequestedPatches) {
+        requestAllData();
+        setHasRequestedPatches(true);
+    }
+}, [isM1Detected, hasRequestedPatches]);x
   
   useEffect(() => {
     if (selectedDevice && !isM1Detected) {
@@ -75,6 +188,23 @@ const MAX_RETRIES = 3;
       };
     }
   }, [selectedDevice, isM1Detected]);
+
+  useEffect(() => {
+    if (midiAccess) {
+        // Set up message handlers for all MIDI inputs
+        midiAccess.inputs.forEach(input => {
+            console.log('Setting up MIDI listener for:', input.name);
+            input.addEventListener('midimessage', handleMIDIMessage);
+        });
+
+        // Cleanup
+        return () => {
+            midiAccess.inputs.forEach(input => {
+                input.removeEventListener('midimessage', handleMIDIMessage);
+            });
+        };
+    }
+}, [midiAccess]);
   
   function handleMIDIMessage(event) {
     const data = event.data;
@@ -155,18 +285,44 @@ function requestCardPatchDump() {
   const message = [0xf0, 0x42, 0x30, 0x19, 0x1c, BANKS.CARD.id, 0xf7];
   
   sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Card bank dump")
+      .then(response => {
+          // Analyze response to determine format
+          const data = unescapeSysex(response.slice(6, -1));
+          const format = determineCardFormat(data);
+          setCardFormat(format);
+          
+          // Process patches based on determined format
+          parsePatchDump(response, setCardPatches, {
+              ...BANKS.CARD,
+              size: BANKS.CARD.getSize(format)
+          });
+      })
       .catch(error => {
           console.error('Failed to get card patches:', error);
           setCardError('Failed to read card patches');
       })
       .finally(() => setCardLoading(false));
 }
+
+function determineCardFormat(data) {
+  // Analyze data length/content to determine format
+  // We need to establish the exact criteria based on testing
+  // For now, this is a placeholder logic
+  if (data.length >= 14300) { // 100 programs (143 bytes each)
+      return CARD_FORMAT.FULL;
+  } else if (data.length >= 7150) { // 50 programs
+      return CARD_FORMAT.HALF;
+  } else {
+      return CARD_FORMAT.SEQ_ONLY;
+  }
+}
+
 async function sendSysExWithRetry(message, timeoutMs, description) {
   let attempts = 0;
   while (attempts < MAX_RETRIES) {
       try {
-          await sendSysExAndWaitForResponse(message, timeoutMs);
-          return true;
+          const response = await sendSysExAndWaitForResponse(message, timeoutMs);
+          return response;  // Return the actual response data
       } catch (error) {
           attempts++;
           console.log(`${description} attempt ${attempts} failed:`, error);
@@ -204,7 +360,6 @@ function sendSysExAndWaitForResponse(message, timeoutMs) {
       sendSysEx(message);
   });
 }
-
 function formatCase(text, format) {
   const words = text.trim().split(/[\s_-]+/);
   switch(format) {
@@ -216,6 +371,8 @@ function formatCase(text, format) {
           return words[0].toLowerCase() + words.slice(1).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
       case 'pascal':
           return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+      case 'title':
+          return words.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
       case 'upper':
           return text.toUpperCase();
       case 'lower':
@@ -246,55 +403,55 @@ function renamePatch(patchId, newName, bank) {
   return sendSysExWithRetry(message, TIMEOUT_MS.PATCH_DUMP, "Rename patch");
 }
 
-
-
 function PatchRename({ patch, onRename, onCancel }) {
-  const [newName, setNewName] = useState(patch.name);
+  // Extract the name part after "number: "
+  const currentName = patch.split(': ')[1];
+  const [newName, setNewName] = useState(currentName);
 
   const handleFormat = (format) => {
-    setNewName(formatCase(newName, format));
+      setNewName(formatCase(newName, format));
   };
 
   const handleSave = () => {
-    const trimmedName = newName.slice(0, 10);
-    onRename(patch.id, trimmedName);
+      const trimmedName = newName.slice(0, 10);
+      onRename(patch.id, trimmedName);
   };
 
   return (
-    <div className="space-y-3">
-      <div className="flex space-x-2">
-        <input
-          type="text"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          maxLength={10}
-          className="flex-1 px-3 py-1 rounded border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-        />
+      <div className="space-y-3">
+          <div className="flex space-x-2">
+              <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  maxLength={10}
+                  className="flex-1 px-3 py-1 rounded border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+              />
+              <button
+                  onClick={handleSave}
+                  className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+              >
+                  Save
+              </button>
+              <button
+                  onClick={onCancel}
+                  className="px-3 py-1 bg-gray-100 text-gray-600 rounded text-sm hover:bg-gray-200"
+              >
+                  Cancel
+              </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+    {['Title Case', 'snake_case', 'kebab-case', 'camelCase', 'PascalCase', 'UPPER CASE', 'lower case'].map((format) => (
         <button
-          onClick={handleSave}
-          className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
-        >
-          Save
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-3 py-1 bg-gray-100 text-gray-600 rounded text-sm hover:bg-gray-200"
-        >
-          Cancel
-        </button>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {['snake', 'kebab', 'camel', 'pascal', 'upper', 'lower'].map((format) => (
-          <button
             key={format}
             onClick={() => handleFormat(format)}
             className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
-          >
+        >
             {format}
-          </button>
-        ))}
+        </button>
+    ))}
+</div>
       </div>
-    </div>
   );
 }
 
@@ -323,24 +480,26 @@ function escapeSysex(data) {
   return result;
 }
 
-  function parsePatchDump(data, setPatchesFunction, bank) {
-    console.log(`Received Patch Bank Dump for ${bank.name}`, data);
-    const rawData = unescapeSysex(data.slice(6, -1));
-    const patches = [];
-    let dataPointer = 0;
-    const PATCH_SIZE = 143;
-    const expectedPatches = bank.size;  // Use bank-specific size
+function parsePatchDump(data, setPatchesFunction, bank) {
+  console.log(`Received Patch Bank Dump for ${bank.name}`, data);
+  const rawData = unescapeSysex(data.slice(6, -1));
+  const patches = [];
+  let dataPointer = 0;
+  const PATCH_SIZE = 143;
+  const expectedPatches = bank.size;
 
-    while (dataPointer + PATCH_SIZE <= rawData.length && patches.length < expectedPatches) {
-        const patchNumber = dataPointer / PATCH_SIZE + 1;
-        const nameBytes = rawData.slice(dataPointer, dataPointer + 10);
-        const name = nameBytes.map(byte => String.fromCharCode(byte)).join("").trim();
-        patches.push(`${patchNumber}: ${name}`);
-        dataPointer += PATCH_SIZE;
-    }
+  while (dataPointer + PATCH_SIZE <= rawData.length && patches.length < expectedPatches) {
+      const patchNumber = dataPointer / PATCH_SIZE + 1;
+      const nameBytes = rawData.slice(dataPointer, dataPointer + 10);
+      // Check if all bytes are null (0x00)
+      const isEmpty = nameBytes.every(byte => byte === 0);
+      const name = isEmpty ? "Empty" : nameBytes.map(byte => String.fromCharCode(byte)).join("").trim();
+      patches.push(`${patchNumber}: ${name}`);
+      dataPointer += PATCH_SIZE;
+  }
 
-    console.log(`Extracted ${patches.length} patches from ${bank.name}:`, patches);
-    setPatchesFunction(patches);
+  console.log(`Extracted ${patches.length} patches from ${bank.name}:`, patches);
+  setPatchesFunction(patches);
 }
   
   function unescapeSysex(sysex) {
@@ -455,99 +614,114 @@ function escapeSysex(data) {
 
           {/* Banks Grid */}
           {isM1Detected && (
-            <div className="grid md:grid-cols-2 gap-6">
-              {/* Internal Bank */}
-              <div className="space-y-4">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-lg font-semibold text-gray-800">
-                    Internal Bank ({patches.length}/{BANKS.INTERNAL.size})
-                  </h2>
-                  <button
-                    onClick={requestPatchDump}
-                    disabled={internalLoading}
-                    className="inline-flex items-center px-3 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
-                  >
-                    {internalLoading ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                        Loading...
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="w-4 h-4 mr-2" />
-                        Refresh
-                      </>
-                    )}
-                  </button>
-                </div>
-                <div className="grid grid-cols-1 gap-2">
-                  {[...Array(BANKS.INTERNAL.size)].map((_, index) => {
-                    const patch = patches[index];
-                    return patch ? (
-                      <PatchDisplay
-                        key={`internal-${index}`}
-                        patch={patch}
-                        bank={BANKS.INTERNAL}
-                      />
-                    ) : (
-                      <div key={`internal-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
-                        Empty Slot {index + 1}
+              <Tabs defaultValue="internal" className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="internal">Internal Bank</TabsTrigger>
+                  <TabsTrigger value="card">Card Bank</TabsTrigger>
+                </TabsList>
+                
+                {/* Internal Bank Tab */}
+                <TabsContent value="internal">
+                  <Tabs defaultValue="programs">
+                    <TabsList className="grid w-full grid-cols-2">
+                      <TabsTrigger value="programs">Programs ({patches.length}/{BANKS.INTERNAL.size})</TabsTrigger>
+                      <TabsTrigger value="combinations">Combinations ({internalCombinations.length}/{BANKS.INTERNAL.size})</TabsTrigger>
+                    </TabsList>
+            
+                    {/* Programs Content */}
+                    <TabsContent value="programs" className="space-y-4">
+                      <div className="flex justify-end">
+                        <button
+                          onClick={requestPatchDump}
+                          disabled={internalLoading}
+                          className="inline-flex items-center px-3 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+                        >
+                          {internalLoading ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                              Loading...
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              Refresh
+                            </>
+                          )}
+                        </button>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Card Bank */}
-              <div className="space-y-4">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-lg font-semibold text-gray-800">
-                    Card Bank ({cardPatches.length}/{BANKS.CARD.size})
-                  </h2>
-                  <button
-                    onClick={requestCardPatchDump}
-                    disabled={cardLoading}
-                    className="inline-flex items-center px-3 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
-                  >
-                    {cardLoading ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                        Loading...
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="w-4 h-4 mr-2" />
-                        Refresh
-                      </>
+                      <div className="grid grid-cols-1 gap-2">
+                        {[...Array(BANKS.INTERNAL.size)].map((_, index) => {
+                          const patch = patches[index];
+                          return patch ? (
+                            <PatchDisplay
+                              key={`internal-${index}`}
+                              patch={patch}
+                              bank={BANKS.INTERNAL}
+                            />
+                          ) : (
+                            <div key={`internal-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
+                              Empty Slot {index + 1}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </TabsContent>
+            
+                    {/* Combinations Content */}
+                    <TabsContent value="combinations" className="space-y-4">
+                      {/* Similar structure to programs but for combinations */}
+                    </TabsContent>
+                  </Tabs>
+                </TabsContent>
+            
+                {/* Card Bank Tab */}
+                <TabsContent value="card">
+                  <div className="mb-4">
+                    {cardFormat !== null && (
+                      <div className="text-sm text-gray-600">
+                        {cardFormat === CARD_FORMAT.FULL && (
+                          <span>100 Programs and 100 Combinations</span>
+                        )}
+                        {cardFormat === CARD_FORMAT.HALF && (
+                          <span>50 Programs, 50 Combinations, and Sequencer Data (3,500 notes)</span>
+                        )}
+                        {cardFormat === CARD_FORMAT.SEQ_ONLY && (
+                          <span>Sequencer Data Only (7,700 notes)</span>
+                        )}
+                      </div>
                     )}
-                  </button>
-                </div>
-                {cardError ? (
-                  <Alert variant="destructive" className="mb-4">
-                    <AlertCircle className="w-4 h-4 mr-2" />
-                    <AlertDescription>{cardError}</AlertDescription>
-                  </Alert>
-                ) : (
-                  <div className="grid grid-cols-1 gap-2">
-                    {[...Array(BANKS.CARD.size)].map((_, index) => {
-                      const patch = cardPatches[index];
-                      return patch ? (
-                        <PatchDisplay
-                          key={`card-${index}`}
-                          patch={patch}
-                          bank={BANKS.CARD}
-                        />
-                      ) : (
-                        <div key={`card-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
-                          Empty Slot {index + 1}
-                        </div>
-                      );
-                    })}
                   </div>
-                )}
-              </div>
-            </div>
-          )}
+            
+                  {cardError ? (
+                    <Alert variant="destructive">
+                      <AlertCircle className="w-4 h-4 mr-2" />
+                      <AlertDescription>{cardError}</AlertDescription>
+                    </Alert>
+                  ) : cardFormat === CARD_FORMAT.SEQ_ONLY ? (
+                    <div className="p-4 bg-gray-50 rounded-md">
+                      <p className="text-gray-600">Card is formatted for sequencer data only (7,700 notes)</p>
+                    </div>
+                  ) : (
+                    <Tabs defaultValue="programs">
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="programs">Programs ({cardPatches.length}/{BANKS.CARD.getSize(cardFormat)})</TabsTrigger>
+                        <TabsTrigger value="combinations">Combinations ({cardCombinations.length}/{BANKS.CARD.getSize(cardFormat)})</TabsTrigger>
+                      </TabsList>
+            
+                      {/* Card Programs Content */}
+                      <TabsContent value="programs" className="space-y-4">
+                        {/* Similar structure to internal programs */}
+                      </TabsContent>
+            
+                      {/* Card Combinations Content */}
+                      <TabsContent value="combinations" className="space-y-4">
+                        {/* Similar structure to internal combinations */}
+                      </TabsContent>
+                    </Tabs>
+                  )}
+                </TabsContent>
+              </Tabs>
+            )}
         </CardContent>
       </Card>
     </div>
