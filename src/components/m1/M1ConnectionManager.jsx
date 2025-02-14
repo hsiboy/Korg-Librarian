@@ -2,7 +2,7 @@ import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
-import { useMidi } from '../../hooks/useMidi';
+import { useMidi } from '@/hooks/useMidi';
 
 function M1ConnectionManager({ onConnectionComplete }) {
   const {

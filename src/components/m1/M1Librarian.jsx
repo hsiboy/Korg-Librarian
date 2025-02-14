@@ -3,9 +3,9 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { RefreshCw, AlertCircle } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BANKS, CARD_FORMAT } from '../../constants/midi';
-import { useMidi } from '../../hooks/useMidi';
-import { usePatchOperations } from '../../hooks/usePatchOperations';
+import { BANKS, CARD_FORMAT } from '@/constants/midi';
+import { useMidi } from '@/hooks/useMidi';
+import { usePatchOperations } from '@/hooks/usePatchOperations';
 import { PatchDisplay } from './PatchDisplay';
 import M1ConnectionManager from './M1ConnectionManager';
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { formatCase } from '../../utils/midi';
+import { formatCase } from '@/utils/midi';
 
 export function PatchRename({ patch, onRename, onCancel }) {
     const currentName = patch.split(': ')[1];
