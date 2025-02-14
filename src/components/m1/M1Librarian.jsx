@@ -7,7 +7,7 @@ import { BANKS, CARD_FORMAT } from '../../constants/midi';
 import { useMidi } from '../../hooks/useMidi';
 import { usePatchOperations } from '../../hooks/usePatchOperations';
 import { PatchDisplay } from './PatchDisplay';
-import { M1ConnectionManager } from './M1ConnectionManager';
+import M1ConnectionManager from './M1ConnectionManager';
 
 export default function KorgM1Librarian() {
     const {
@@ -54,7 +54,11 @@ export default function KorgM1Librarian() {
                 </CardHeader>
 
                 <CardContent className="p-6">
-                    <M1ConnectionManager />
+                    <M1ConnectionManager 
+                        onConnectionComplete={({ midiInput, midiOutput, deviceInfo }) => {
+                            setSelectedDevice(midiOutput);
+                        }}
+                    />
 
                     {/* Error Display */}
                     {(error || midiError) && (

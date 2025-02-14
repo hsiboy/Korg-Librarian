@@ -4,10 +4,12 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import { useMidi } from '../../hooks/useMidi';
 
-const M1ConnectionManager = ({ onConnectionComplete }) => {
+function M1ConnectionManager({ onConnectionComplete }) {
   const {
     midiInput,
-    midiOutput,
+    midiOutput: selectedDevice,
+    midiOutputs,
+    setSelectedDevice,
     deviceInfo,
     isM1Detected,
     error,
@@ -16,14 +18,14 @@ const M1ConnectionManager = ({ onConnectionComplete }) => {
 
   // Notify parent component when connection is complete
   React.useEffect(() => {
-    if (isM1Detected && midiInput && midiOutput && deviceInfo) {
+    if (isM1Detected && midiInput && selectedDevice && deviceInfo) {
       onConnectionComplete?.({
         midiInput,
-        midiOutput,
+        midiOutput: selectedDevice,
         deviceInfo
       });
     }
-  }, [isM1Detected, midiInput, midiOutput, deviceInfo, onConnectionComplete]);
+  }, [isM1Detected, midiInput, selectedDevice, deviceInfo, onConnectionComplete]);
 
   // Status display component
   const StatusDisplay = () => {
@@ -102,21 +104,31 @@ const M1ConnectionManager = ({ onConnectionComplete }) => {
   };
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="mb-6">
+      <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Connection Status</CardTitle>
+        <div className="flex items-center space-x-2">
+          <select 
+            onChange={e => setSelectedDevice(midiOutputs[e.target.value])}
+            className="px-3 py-2 rounded-md border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            {midiOutputs.map((device, index) => (
+              <option key={device.id} value={index}>{device.name}</option>
+            ))}
+          </select>
+        </div>
       </CardHeader>
       <CardContent>
         <StatusDisplay />
-        {midiInput && (
+        {midiInput && selectedDevice && (
           <div className="mt-4 text-sm text-gray-600">
             <p>Input: {midiInput.name}</p>
-            <p>Output: {midiOutput?.name}</p>
+            <p>Output: {selectedDevice.name}</p>
           </div>
         )}
       </CardContent>
     </Card>
   );
-};
+}
 
 export default M1ConnectionManager;
