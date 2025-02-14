@@ -1,4 +1,4 @@
-import M1Librarian from "./components/M1Librarian";
+import M1Librarian from "./components/m1/M1Librarian";
 
 function App() {
   return (
