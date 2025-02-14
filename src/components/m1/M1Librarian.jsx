@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { RefreshCw, AlertCircle, Check } from 'lucide-react';
+import { RefreshCw, AlertCircle } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BANKS, CARD_FORMAT } from '../../constants/midi';
 import { useMidi } from '../../hooks/useMidi';
 import { usePatchOperations } from '../../hooks/usePatchOperations';
 import { PatchDisplay } from './PatchDisplay';
+import { M1ConnectionManager } from './M1ConnectionManager';
 
 export default function KorgM1Librarian() {
     const {
@@ -47,50 +48,13 @@ export default function KorgM1Librarian() {
         <div className="min-h-screen bg-gray-50 p-6">
             <Card className="max-w-6xl mx-auto bg-white shadow-lg">
                 <CardHeader className="border-b bg-gray-50/50">
-                    <div className="flex items-center justify-between">
-                        <CardTitle className="text-2xl font-bold text-gray-800">
-                            Korg M1 Patch Librarian
-                        </CardTitle>
-                        <div className="flex items-center space-x-2">
-                            <select 
-                                onChange={e => setSelectedDevice(midiOutputs[e.target.value])}
-                                className="px-3 py-2 rounded-md border border-gray-200 bg-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                            >
-                                {midiOutputs.map((device, index) => (
-                                    <option key={device.id} value={index}>{device.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                    </div>
+                    <CardTitle className="text-2xl font-bold text-gray-800">
+                        Korg M1 Patch Librarian
+                    </CardTitle>
                 </CardHeader>
 
                 <CardContent className="p-6">
-                    {/* Connection Status Card */}
-                    <Card className="mb-6 bg-gray-50 border-none">
-                        <CardContent className="p-4">
-                            <div className="flex items-center space-x-3">
-                                {!selectedDevice ? (
-                                    <>
-                                        <AlertCircle className="w-5 h-5 text-yellow-500" />
-                                        <span className="text-yellow-700">No MIDI Interface Connected</span>
-                                    </>
-                                ) : !deviceInfo ? (
-                                    <>
-                                        <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />
-                                        <span className="text-blue-700">Detecting device...</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Check className="w-5 h-5 text-green-500" />
-                                        <div className="flex space-x-6 text-sm text-gray-600">
-                                            <span>Korg M1 {isM1Detected ? '✓' : '✗'}</span>
-                                            <span>Version: #{deviceInfo.softwareVersion.toString(16)}</span>
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-                        </CardContent>
-                    </Card>
+                    <M1ConnectionManager />
 
                     {/* Error Display */}
                     {(error || midiError) && (
