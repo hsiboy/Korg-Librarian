@@ -9,7 +9,7 @@ import { usePatchOperations } from '@/hooks/usePatchOperations';
 import { PatchDisplay } from './PatchDisplay';
 import M1ConnectionManager from './M1ConnectionManager';
 
-export default function KorgM1Librarian() {
+export default function KorgM1Librarian() { 
     const {
         midiOutputs,
         selectedDevice,
@@ -131,11 +131,18 @@ export default function KorgM1Librarian() {
                                     {/* Combinations Content */}
                                     <TabsContent value="combinations" className="space-y-4">
                                         <div className="grid grid-cols-1 gap-2">
-                                            {internalCombinations.map((combination, index) => (
-                                                <div key={`internal-combination-${index}`} className="p-3 rounded-md border border-gray-200 bg-white">
-                                                    <span className="text-gray-700">{combination}</span>
-                                                </div>
-                                            ))}
+                                            {[...Array(BANKS.INTERNAL.size)].map((_, index) => {
+                                                const combination = internalCombinations[index];
+                                                return combination ? (
+                                                    <div key={`internal-combination-${index}`} className="p-3 rounded-md border border-gray-200 bg-white">
+                                                        <span className="text-gray-700">{combination}</span>
+                                                    </div>
+                                                ) : (
+                                                    <div key={`internal-combination-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
+                                                        Empty Slot {index + 1}
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
                                     </TabsContent>
                                 </Tabs>
@@ -182,25 +189,39 @@ export default function KorgM1Librarian() {
                                         {/* Card Programs Content */}
                                         <TabsContent value="programs" className="space-y-4">
                                             <div className="grid grid-cols-1 gap-2">
-                                                {cardPatches.map((patch, index) => (
-                                                    <PatchDisplay
-                                                        key={`card-${index}`}
-                                                        patch={patch}
-                                                        bank={BANKS.CARD}
-                                                        onRename={renamePatch}
-                                                    />
-                                                ))}
+                                                {[...Array(BANKS.CARD.getSize(cardFormat))].map((_, index) => {
+                                                    const patch = cardPatches[index];
+                                                    return patch ? (
+                                                        <PatchDisplay
+                                                            key={`card-${index}`}
+                                                            patch={patch}
+                                                            bank={BANKS.CARD}
+                                                            onRename={renamePatch}
+                                                        />
+                                                    ) : (
+                                                        <div key={`card-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
+                                                            Empty Slot {index + 1}
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
                                         </TabsContent>
                     
                                         {/* Card Combinations Content */}
                                         <TabsContent value="combinations" className="space-y-4">
                                             <div className="grid grid-cols-1 gap-2">
-                                                {cardCombinations.map((combination, index) => (
-                                                    <div key={`card-combination-${index}`} className="p-3 rounded-md border border-gray-200 bg-white">
-                                                        <span className="text-gray-700">{combination}</span>
-                                                    </div>
-                                                ))}
+                                                {[...Array(BANKS.CARD.getSize(cardFormat))].map((_, index) => {
+                                                    const combination = cardCombinations[index];
+                                                    return combination ? (
+                                                        <div key={`card-combination-${index}`} className="p-3 rounded-md border border-gray-200 bg-white">
+                                                            <span className="text-gray-700">{combination}</span>
+                                                        </div>
+                                                    ) : (
+                                                        <div key={`card-combination-${index}`} className="p-3 rounded-md bg-gray-50 text-gray-400 text-sm border border-dashed">
+                                                            Empty Slot {index + 1}
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
                                         </TabsContent>
                                     </Tabs>
